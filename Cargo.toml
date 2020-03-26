@@ -14,8 +14,8 @@ nrf52832-hal = {version = "0.8.1", default-features = false, features = ["xxAA-p
 panic-halt = "0.2.0"
 panic-semihosting = "0.5.3"
 #st7789 = "0.2.2"
-#st7789 = { git = "https://github.com/tstellanova/st7789" }
-st7789 = { path = "../st7789" }
+st7789 = { git = "https://github.com/tstellanova/st7789" }
+#st7789 = { path = "../st7789" }
 
 arrayvec = {version = "0.5.1", default-features = false}
 shared-bus = {version = "0.1.4", features = ["cortexm"] }
