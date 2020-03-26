@@ -10,7 +10,7 @@ extern crate panic_semihosting; // logs messages to the host stderr; requires a 
 use nrf52832_hal as p_hal;
 use nrf52832_hal::nrf52832_pac as pac;
 use p_hal::prelude::*;
-use p_hal::{gpio::*, spim, twim, Delay};
+use p_hal::{gpio::*, spim, twim, Delay, clocks::LfOscConfiguration};
 
 use arrayvec::ArrayString;
 use core::fmt;
@@ -56,7 +56,15 @@ fn main() -> ! {
     let cp = pac::CorePeripherals::take().unwrap();
     let mut delay_source = Delay::new(cp.SYST);
 
+    // PineTime has a 32 MHz HSE (HFXO) and a 32.768 kHz LSE (LFXO)
+    // Optimize clock config
     let dp = pac::Peripherals::take().unwrap();
+    let _clockos = dp.CLOCK.constrain()
+        .enable_ext_hfosc()
+        //.set_lfclk_src_external(LfOscConfiguration::ExternalNoBypass)
+        // TODO starting with external LFCLK hangs...
+        .start_lfclk();
+
     let port0 = dp.P0.split();
 
     hprintln!("\r\n--- BEGIN ---").unwrap();
@@ -90,7 +98,7 @@ fn main() -> ! {
     hrs.init().unwrap();
     hrs.enable_hrs().unwrap();
     hrs.enable_oscillator().unwrap();
-    hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms0).unwrap();
+    hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms800).unwrap();
     let hrs_id = hrs.device_id().unwrap();
     hprintln!("hrs device id: {}", hrs_id).unwrap();
 

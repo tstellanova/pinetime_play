@@ -21,27 +21,30 @@ This is work-in-progress
 - [x] Release build runs on PineTime
 - [x] Internal SPI bus access
 - [x] Support for rendering to display (using st7789 driver)
+- [x] Internal I2C bus access
 - [x] Load driver for HRS3300 heart rate sensor
-- [ ] Optimal clock configuration
-- [ ] Internal I2C bus access
-- [ ] Access all onboard sensors (requires building some embedded HAL drivers)
-- [ ] Driver for BMA421 accelerometer
+- [x] Load driver for BMA421 accelerometer
+- [x] Explicitly set clock configuration (low speed clock still has problems)
+- [x] Semihosting debug support via swd port
+- [ ] Translate HRS3300 readings into actual BPM
+- [ ] Access CST816S touchpad (requires creating a driver)
+- [ ] Access all onboard sensors (some missing embedded HAL drivers)
 - [ ] Calibration routines for accelerometers
 - [ ] Reading battery status ports (using ADC?)
-- [ ] flash memory read/write at runtime
-- [x] Semihosting debug support via swd port
+- [ ] flash memory read/write at runtime (using spi-memory may have problems)
 - [ ] CI
 - [ ] Documentation
 
 
 ## Clocks
-- PineTime has a low speed 32.768 kHz crystal (LSE)
+- PineTime has a low speed 32.768 kHz crystal and a high speed 32 MHz crystal.
+The example code now configures these clocks, though there's still some issue
+with the low frequency clock configuration. 
 
 ## Notes on buses
 
 See the "PineTime Port Assignment" document
-for notes on which devices are attached to which buse.
-
+for notes on which devices are attached to which buses.
 
 ## License
 
