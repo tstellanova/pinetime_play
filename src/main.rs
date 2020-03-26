@@ -10,7 +10,7 @@ extern crate panic_semihosting; // logs messages to the host stderr; requires a 
 use nrf52832_hal as p_hal;
 use nrf52832_hal::nrf52832_pac as pac;
 use p_hal::prelude::*;
-use p_hal::{gpio::*, spim, Delay};
+use p_hal::{gpio::*, spim, twim, Delay};
 
 use arrayvec::ArrayString;
 use core::fmt;
@@ -20,8 +20,10 @@ use cortex_m_semihosting::hprintln;
 use embedded_graphics::{egtext, fonts::Font24x32, pixelcolor::Rgb565, prelude::*, text_style};
 use embedded_graphics::{prelude::*, primitives::*, style::*};
 use embedded_hal::digital::v1::OutputPin;
+use p_hal::gpio::OpenDrain;
 use rt::entry;
 use st7789::{Orientation, ST7789};
+use embedded_hal::digital::v1::StatefulOutputPin;
 
 mod port_types;
 use port_types::*;
@@ -41,6 +43,26 @@ fn main() -> ! {
 
     let mut rng = dp.RNG.constrain();
 
+    // "STATUS LED (NOT STAFF)"
+    let mut user_led1 = port0.p0_27.into_push_pull_output(Level::Low).degrade();
+
+    // pushbutton input GPIO: P0.13
+    let mut _user_butt = port0.p0_13.into_floating_input().degrade();
+
+    let mut _vibe = port0.p0_16.into_push_pull_output(Level::Low).degrade();
+
+    // internal i2c bus configuration:
+    // BMA421, HRS3300, TouchPad  (CST816S)
+    // BMA421-INT:  P0.08
+    // TP-INT: P0.28
+    let i2c0_pins = twim::Pins {
+        scl: port0.p0_07.into_floating_input().degrade(),
+        sda: port0.p0_06.into_floating_input().degrade()
+    };
+    let i2c_port = twim::Twim::new(dp.TWIM0, i2c0_pins, twim::Frequency::K400);
+    let _i2c_bus0 = shared_bus::CortexMBusManager::new(i2c_port);
+
+
     let spim0_pins = spim::Pins {
         sck: port0.p0_02.into_push_pull_output(Level::Low).degrade(),
         miso: None,
@@ -49,12 +71,12 @@ fn main() -> ! {
 
     // create SPI M0 interface, 8 Mbps, use 122 as "over read character"
     let spim0 = spim::Spim::new(dp.SPIM0, spim0_pins, spim::Frequency::M8, spim::MODE_3, 122);
+    //let spi_bus0 = shared_bus::CortexMBusManager::new(spim0);
 
     // backlight control pin for display
     let mut _backlight = port0.p0_22.into_push_pull_output(Level::Low);
     // SPI chip select (CSN) for the display.
-    // There's only one device on SPIM0 ? so we always leave it selected
-    let _display_csn = port0.p0_25.into_push_pull_output(Level::Low);
+    let mut display_csn = port0.p0_25.into_push_pull_output(Level::High);
 
     // data/clock switch pin for display
     let display_dc = port0.p0_18.into_push_pull_output(Level::Low);
@@ -62,6 +84,7 @@ fn main() -> ! {
     let display_rst = port0.p0_26.into_push_pull_output(Level::Low);
 
     // create display driver
+    display_csn.set_high();
     let mut display = ST7789::new(
         spim0,
         display_dc,
@@ -70,9 +93,21 @@ fn main() -> ! {
         SCREEN_HEIGHT as u16,
         delay_source,
     );
+    display_csn.set_low();
     display.init().unwrap();
     display.set_orientation(&Orientation::Landscape).unwrap();
     draw_background(&mut display);
+    display_csn.set_high();
+
+    // TODO: Setup SPI flash NOR memory
+    // let mut flash_csn = port0.p0_05.into_push_pull_output(Level::High);
+    // let mut flash = spi_memory::series25::Flash::init(spi_bus0.acquire(), flash_csn).unwrap();
+    // if let Ok(flash_id) = flash.read_jedec_id() {
+    //     hprintln!("flash ID: {} 0x{:x} {:?}", flash_id.continuation_count(), flash_id.mfr_code(), flash_id.device_id()).unwrap();
+    // }
+    //expect: mfrid == 0x9D
+    // device ID 0x7B = Pm25LV512
+    // and the second manufacturer ID (7Fh)
 
     loop {
         let rando = [
@@ -80,8 +115,17 @@ fn main() -> ! {
             rng.random_u16() as i16,
             rng.random_u16() as i16,
         ];
+        display_csn.set_low();
         render_vec3_i16(&mut display, 20, "hi", rando.as_ref());
-        hprintln!(".").unwrap();
+        display_csn.set_high();
+
+        if user_led1.is_set_low() {
+            user_led1.set_high();
+        }
+        else {
+            user_led1.set_low();
+        }
+
     }
 }
 

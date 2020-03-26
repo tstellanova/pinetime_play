@@ -3,16 +3,18 @@
 An environment for experimenting with rust on 
 the [PineTime](https://wiki.pine64.org/index.php/PineTime)
  nrf52-based smart watch.
+ 
+Note that you will need to 
+[clear the nrf52 flash protection](https://gist.github.com/tstellanova/8c8509ae3dd4f58697c3b487dc3393b2)
+before you will be able to program the PineTime. 
 
-For installation and debugging use either 
+For installation and debugging you can use either 
 openocd (built with proper support) or the 
 [daily build of the Black Magic Probe firmware](https://github.com/blacksphere/blackmagic/wiki/Upgrading-Firmware)
 
 We've used the an inexpensive ST-Link adapter to connect with the PineTime.
 
-
 ## Status
-
 This is  work-in-progress
 
 - [x] Debug build runs on PineTime
