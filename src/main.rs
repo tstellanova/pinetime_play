@@ -17,24 +17,25 @@ use core::fmt;
 use core::fmt::Arguments;
 use cortex_m_rt as rt;
 use cortex_m_semihosting::hprintln;
-use embedded_graphics::{
-    egtext, fonts::Font24x32, pixelcolor::Rgb565, prelude::*, text_style,
-};
 use embedded_graphics::{prelude::*, primitives::*, style::*};
-use embedded_hal::digital::v1::OutputPin;
+use embedded_graphics::{
+    egtext, fonts::Font24x32, pixelcolor::Rgb565, text_style,
+};
+use embedded_hal::digital::v2::OutputPin;
 use hrs3300::Hrs3300;
 use rt::entry;
 use st7789::{Orientation, ST7789};
+use bma421::{BMA421};
 
 #[allow(unused)]
 mod port_types;
 use port_types::*;
-use cortex_m::asm::delay;
+use embedded_hal::blocking::delay::{DelayMs,DelayUs};
+use core::convert::TryInto;
 
 const SCREEN_WIDTH: i32 = 240;
 const SCREEN_HEIGHT: i32 = 240;
 
-// type DisplayType = st7789::ST7789<Spim0PortType, DisplaySckPinType, DisplayMosiPinType, Delay>;
 type DisplayType<'a> = st7789::ST7789<
     shared_bus::proxy::BusProxy<
         'a,
@@ -43,39 +44,43 @@ type DisplayType<'a> = st7789::ST7789<
     >,
     DisplaySckPinType,
     DisplayMosiPinType,
-    Delay,
 >;
 
 #[entry]
 fn main() -> ! {
     let cp = pac::CorePeripherals::take().unwrap();
-    let delay_source = Delay::new(cp.SYST);
+    let mut delay_source = Delay::new(cp.SYST);
 
     let dp = pac::Peripherals::take().unwrap();
     let port0 = dp.P0.split();
 
+    hprintln!("\r\n--- BEGIN ---").unwrap();
+
     // random number generator peripheral
-    let mut rng = dp.RNG.constrain();
+    //let mut rng = dp.RNG.constrain();
 
     // pushbutton input GPIO: P0.13
     let mut _user_butt = port0.p0_13.into_floating_input().degrade();
     // must drive this pin high to enable pushbutton
     let mut _user_butt_en =
-        port0.p0_15.into_push_pull_output(Level::Low).degrade();
+        port0.p0_15.into_push_pull_output(Level::High).degrade();
     // vibration motor output: drive low to activate motor
     let mut _vibe = port0.p0_16.into_push_pull_output(Level::Low).degrade();
 
-    // internal i2c bus devices: BMA421 (accel), HRS3300 (hrs), CST816S (TouchPad)
+    // internal i2c0 bus devices: BMA421 (accel), HRS3300 (hrs), CST816S (TouchPad)
     // BMA421-INT:  P0.08
     // TP-INT: P0.28
     let i2c0_pins = twim::Pins {
         scl: port0.p0_07.into_floating_input().degrade(),
         sda: port0.p0_06.into_floating_input().degrade(),
     };
-    let i2c_port = twim::Twim::new(dp.TWIM0, i2c0_pins, twim::Frequency::K400);
+    let i2c_port = twim::Twim::new(dp.TWIM1, i2c0_pins, twim::Frequency::K400);
     let i2c_bus0 = shared_bus::CortexMBusManager::new(i2c_port);
 
-    // TODO setup the heart rate sensor
+    let mut accel = BMA421::new(i2c_bus0.acquire(), &mut delay_source).unwrap();
+
+    delay_source.delay_ms(1u8);
+
     let mut hrs = Hrs3300::new(i2c_bus0.acquire());
     hrs.init().unwrap();
     hrs.enable_hrs().unwrap();
@@ -83,8 +88,7 @@ fn main() -> ! {
     hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms0).unwrap();
     let hrs_id = hrs.device_id().unwrap();
     hprintln!("hrs device id: {}", hrs_id).unwrap();
-    hrs.disable_hrs().unwrap();
-    hrs.disable_oscillator().unwrap();
+
 
     let spim0_pins = spim::Pins {
         sck: port0.p0_02.into_push_pull_output(Level::Low).degrade(),
@@ -113,20 +117,16 @@ fn main() -> ! {
     let display_rst = port0.p0_26.into_push_pull_output(Level::Low);
 
     // create display driver
-    display_csn.set_high();
     let mut display = ST7789::new(
         spi_bus0.acquire(),
         display_dc,
         display_rst,
         SCREEN_WIDTH as u16,
         SCREEN_HEIGHT as u16,
-        delay_source,
     );
-    display_csn.set_low();
-    display.init().unwrap();
-    display.set_orientation(&Orientation::Landscape).unwrap();
-    draw_background(&mut display);
-    display_csn.set_high();
+
+    configure_display(&mut display, &mut display_csn, &mut delay_source);
+    draw_background(&mut display, &mut display_csn);
 
     // //TODO // Setup SPI flash NOR memory
     // let flash_csn = port0.p0_05.into_push_pull_output(Level::High);
@@ -145,48 +145,77 @@ fn main() -> ! {
 
 
     loop {
-        // if let Ok(heart_rate) = hrs.read_hrs() {
-        //     render_text(
-        //         &mut display,
-        //         &mut display_csn,
-        //         SCREEN_HEIGHT - 32,
-        //         Rgb565::RED,
-        //         format_args!("HR {}", heart_rate),
-        //     );
-        // } else {
-            let rando = [
-                rng.random_u16() as i16,
-                rng.random_u16() as i16,
-                rng.random_u16() as i16,
+        if let Ok(accel_bytes) = accel.read_accel_bytes() {
+            let vec3: [i16; 3] = [
+                i16::from_le_bytes(accel_bytes[0..2].try_into().unwrap()) / 16,
+                i16::from_le_bytes(accel_bytes[2..4].try_into().unwrap()) / 16,
+                i16::from_le_bytes(accel_bytes[4..6].try_into().unwrap()) / 16,
             ];
+
             render_vec3_i16(
                 &mut display,
                 &mut display_csn,
                 20,
                 "hi",
-                rando.as_ref(),
+                vec3.as_ref(),
             );
+
+        }
+
+        if let Ok(heart_rate) = hrs.read_hrs() {
+            render_text(
+                &mut display,
+                &mut display_csn,
+                SCREEN_HEIGHT - 32,
+                Rgb565::RED,
+                format_args!("HR {}", heart_rate),
+            );
+        }
+        // else {
+        //     let rando = [
+        //         rng.random_u16() as i16,
+        //         rng.random_u16() as i16,
+        //         rng.random_u16() as i16,
+        //     ];
+        //     render_vec3_i16(
+        //         &mut display,
+        //         &mut display_csn,
+        //         20,
+        //         "hi",
+        //         rando.as_ref(),
+        //     );
         // }
 
-        delay(10);
+        delay_source.delay_us(100u32);
     }
 }
 
-fn draw_background(display: &mut DisplayType) {
-    let clear_bg = Rectangle::new(
-        Point::new(0, 0),
-        Point::new(SCREEN_WIDTH, SCREEN_HEIGHT),
-    )
-    .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK));
-    clear_bg.draw(display).unwrap();
 
-    let min_dim = SCREEN_WIDTH.min(SCREEN_HEIGHT) as u32;
-    let center_circle = Circle::new(
-        Point::new(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2),
-        min_dim / 2,
-    )
-    .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 2));
-    center_circle.draw(display).unwrap();
+fn configure_display(display: &mut DisplayType,  display_csn: &mut impl OutputPin, delay_source: &mut (impl DelayMs<u8> + DelayUs<u32>)) {
+    let _ = display_csn.set_low();
+    display.init(delay_source).unwrap();
+    display.set_orientation(&Orientation::Landscape).unwrap();
+    let _ = display_csn.set_high();
+}
+
+fn draw_background(display: &mut DisplayType,  display_csn: &mut impl OutputPin) {
+    if let Ok(_) = display_csn.set_low() {
+        let clear_bg = Rectangle::new(
+            Point::new(0, 0),
+            Point::new(SCREEN_WIDTH, SCREEN_HEIGHT),
+        )
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK));
+        clear_bg.draw(display).unwrap();
+
+        let min_dim = SCREEN_WIDTH.min(SCREEN_HEIGHT) as u32;
+        let center_circle = Circle::new(
+            Point::new(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2),
+            min_dim / 2,
+        )
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 2));
+        center_circle.draw(display).unwrap();
+    }
+    let _ = display_csn.set_high();
 }
 
 /// Render formatted text to the display
@@ -197,21 +226,20 @@ fn render_text(
     color: Rgb565,
     args: Arguments<'_>,
 ) {
-    // let mut format_buf = ArrayString::<[u8; 16]>::new();
-    let mut format_buf = ArrayString::<[_; 16]>::new();
+    let mut format_buf = ArrayString::<[u8; 16]>::new();
     if fmt::write(&mut format_buf, args).is_ok() {
-        display_csn.set_low();
-        let _ = egtext!(
-            text = &format_buf,
-            top_left = Point::new(10, y_pos),
-            style = text_style!(
-                font = Font24x32,
-                text_color = color,
-                background_color = Rgb565::BLACK,
-            )
-        )
-        .draw(display);
-        display_csn.set_high();
+        if let Ok(_) = display_csn.set_low() {
+            let _ = egtext!(
+                text = &format_buf,
+                top_left = Point::new(10, y_pos),
+                style = text_style!(
+                    font = Font24x32,
+                    text_color = color,
+                    background_color = Rgb565::BLACK,
+                )
+            ).draw(display);
+        }
+        let _ = display_csn.set_high();
     }
 }
 
@@ -232,3 +260,20 @@ fn render_vec3_i16(
     y_pos += LINE_HEIGHT;
     render_text(display, display_csn, y_pos, Rgb565::GREEN, format_args!("Z: {}", buf[2]));
 }
+
+// fn render_vec3_f32(
+//     display: &mut DisplayType,
+//     display_csn: &mut impl OutputPin,
+//     start_y: i32,
+//     _label: &str,
+//     buf: &F32x3,
+// ) {
+//     const LINE_HEIGHT: i32 = 36;
+//     let mut y_pos = start_y;
+//     //TODO dynamically reformat depending on display size
+//     render_text(display, display_csn, y_pos, Rgb565::GREEN,format_args!("X: {:.3}", buf.x));
+//     y_pos += LINE_HEIGHT;
+//     render_text(display, display_csn, y_pos, Rgb565::GREEN, format_args!("Y: {:.3}", buf.y));
+//     y_pos += LINE_HEIGHT;
+//     render_text(display, display_csn, y_pos, Rgb565::GREEN, format_args!("Z: {:.3}", buf.z));
+// }
