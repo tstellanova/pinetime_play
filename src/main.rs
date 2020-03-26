@@ -29,6 +29,7 @@ use st7789::{Orientation, ST7789};
 #[allow(unused)]
 mod port_types;
 use port_types::*;
+use cortex_m::asm::delay;
 
 const SCREEN_WIDTH: i32 = 240;
 const SCREEN_HEIGHT: i32 = 240;
@@ -74,11 +75,16 @@ fn main() -> ! {
     let i2c_port = twim::Twim::new(dp.TWIM0, i2c0_pins, twim::Frequency::K400);
     let i2c_bus0 = shared_bus::CortexMBusManager::new(i2c_port);
 
-    // setup the heart rate sensor
+    // TODO setup the heart rate sensor
     let mut hrs = Hrs3300::new(i2c_bus0.acquire());
     hrs.init().unwrap();
     hrs.enable_hrs().unwrap();
     hrs.enable_oscillator().unwrap();
+    hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms0).unwrap();
+    let hrs_id = hrs.device_id().unwrap();
+    hprintln!("hrs device id: {}", hrs_id).unwrap();
+    hrs.disable_hrs().unwrap();
+    hrs.disable_oscillator().unwrap();
 
     let spim0_pins = spim::Pins {
         sck: port0.p0_02.into_push_pull_output(Level::Low).degrade(),
@@ -122,32 +128,32 @@ fn main() -> ! {
     draw_background(&mut display);
     display_csn.set_high();
 
-    //TODO: Setup SPI flash NOR memory
-    let flash_csn = port0.p0_05.into_push_pull_output(Level::High);
-    let mut flash =
-        spi_memory::series25::Flash::init(spi_bus0.acquire(), flash_csn)
-            .unwrap();
-    if let Ok(flash_id) = flash.find_device_identifier() {
-        hprintln!(
-            "flash ID: {} 0x{:x} {:?}",
-            flash_id.continuation_count(),
-            flash_id.mfr_code(),
-            flash_id.device_id()
-        )
-        .unwrap();
-    }
+    // //TODO // Setup SPI flash NOR memory
+    // let flash_csn = port0.p0_05.into_push_pull_output(Level::High);
+    // let mut flash =
+    //     spi_memory::series25::Flash::init(spi_bus0.acquire(), flash_csn)
+    //         .unwrap();
+    // if let Ok(flash_id) = flash.find_device_identifier() {
+    //     hprintln!(
+    //         "flash ID: {} 0x{:x} {:?}",
+    //         flash_id.continuation_count(),
+    //         flash_id.mfr_code(),
+    //         flash_id.device_id()
+    //     )
+    //     .unwrap();
+    // }
+
 
     loop {
-        if let Ok(heart_rate) = hrs.read_hrs() {
-            display_csn.set_low();
-            render_text(
-                &mut display,
-                &mut display_csn,
-                20,
-                format_args!("HR {}", heart_rate),
-            );
-            display_csn.set_high();
-        } else {
+        // if let Ok(heart_rate) = hrs.read_hrs() {
+        //     render_text(
+        //         &mut display,
+        //         &mut display_csn,
+        //         SCREEN_HEIGHT - 32,
+        //         Rgb565::RED,
+        //         format_args!("HR {}", heart_rate),
+        //     );
+        // } else {
             let rando = [
                 rng.random_u16() as i16,
                 rng.random_u16() as i16,
@@ -160,8 +166,9 @@ fn main() -> ! {
                 "hi",
                 rando.as_ref(),
             );
-            display_csn.set_high();
-        }
+        // }
+
+        delay(10);
     }
 }
 
@@ -187,6 +194,7 @@ fn render_text(
     display: &mut DisplayType,
     display_csn: &mut impl OutputPin,
     y_pos: i32,
+    color: Rgb565,
     args: Arguments<'_>,
 ) {
     // let mut format_buf = ArrayString::<[u8; 16]>::new();
@@ -198,7 +206,7 @@ fn render_text(
             top_left = Point::new(10, y_pos),
             style = text_style!(
                 font = Font24x32,
-                text_color = Rgb565::GREEN,
+                text_color = color,
                 background_color = Rgb565::BLACK,
             )
         )
@@ -218,9 +226,9 @@ fn render_vec3_i16(
     const LINE_HEIGHT: i32 = 36;
     let mut y_pos = start_y;
     //TODO dynamically reformat depending on display size
-    render_text(display, display_csn, y_pos, format_args!("X: {}", buf[0]));
+    render_text(display, display_csn, y_pos, Rgb565::GREEN,format_args!("X: {}", buf[0]));
     y_pos += LINE_HEIGHT;
-    render_text(display, display_csn, y_pos, format_args!("Y: {}", buf[1]));
+    render_text(display, display_csn, y_pos, Rgb565::GREEN, format_args!("Y: {}", buf[1]));
     y_pos += LINE_HEIGHT;
-    render_text(display, display_csn, y_pos, format_args!("Z: {}", buf[2]));
+    render_text(display, display_csn, y_pos, Rgb565::GREEN, format_args!("Z: {}", buf[2]));
 }
