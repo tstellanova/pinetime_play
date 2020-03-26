@@ -19,7 +19,7 @@ use cortex_m_rt as rt;
 use cortex_m_semihosting::hprintln;
 use embedded_graphics::{prelude::*, primitives::*, style::*};
 use embedded_graphics::{
-    egtext, fonts::Font24x32, pixelcolor::Rgb565, text_style,
+    egtext, fonts::{Font12x16}, pixelcolor::Rgb565, text_style,
 };
 use embedded_hal::digital::v2::OutputPin;
 use hrs3300::Hrs3300;
@@ -35,6 +35,11 @@ use core::convert::TryInto;
 
 const SCREEN_WIDTH: i32 = 240;
 const SCREEN_HEIGHT: i32 = 240;
+const HALF_SCREEN_WIDTH: i32 = SCREEN_WIDTH / 2;
+const MIN_SCREEN_DIM : i32 = SCREEN_HEIGHT;
+const SCREEN_RADIUS: u32 = (MIN_SCREEN_DIM / 2) as u32;
+const FONT_HEIGHT: i32 = 20; //for Font12x16
+
 
 type DisplayType<'a> = st7789::ST7789<
     shared_bus::proxy::BusProxy<
@@ -155,18 +160,18 @@ fn main() -> ! {
             render_vec3_i16(
                 &mut display,
                 &mut display_csn,
-                20,
-                "hi",
+                HALF_SCREEN_WIDTH - 40,
+                30,
                 vec3.as_ref(),
             );
-
         }
 
         if let Ok(heart_rate) = hrs.read_hrs() {
             render_text(
                 &mut display,
                 &mut display_csn,
-                SCREEN_HEIGHT - 32,
+                HALF_SCREEN_WIDTH - 40,
+                SCREEN_HEIGHT - (2*FONT_HEIGHT),
                 Rgb565::RED,
                 format_args!("HR {}", heart_rate),
             );
@@ -180,8 +185,8 @@ fn main() -> ! {
         //     render_vec3_i16(
         //         &mut display,
         //         &mut display_csn,
+        //          10,
         //         20,
-        //         "hi",
         //         rando.as_ref(),
         //     );
         // }
@@ -194,7 +199,7 @@ fn main() -> ! {
 fn configure_display(display: &mut DisplayType,  display_csn: &mut impl OutputPin, delay_source: &mut (impl DelayMs<u8> + DelayUs<u32>)) {
     let _ = display_csn.set_low();
     display.init(delay_source).unwrap();
-    display.set_orientation(&Orientation::Landscape).unwrap();
+    display.set_orientation(&Orientation::Portrait).unwrap();
     let _ = display_csn.set_high();
 }
 
@@ -207,12 +212,11 @@ fn draw_background(display: &mut DisplayType,  display_csn: &mut impl OutputPin)
         .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK));
         clear_bg.draw(display).unwrap();
 
-        let min_dim = SCREEN_WIDTH.min(SCREEN_HEIGHT) as u32;
         let center_circle = Circle::new(
-            Point::new(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2),
-            min_dim / 2,
+            Point::new(HALF_SCREEN_WIDTH, SCREEN_HEIGHT / 2),
+            SCREEN_RADIUS,
         )
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::GREEN, 2));
+        .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 4));
         center_circle.draw(display).unwrap();
     }
     let _ = display_csn.set_high();
@@ -222,18 +226,19 @@ fn draw_background(display: &mut DisplayType,  display_csn: &mut impl OutputPin)
 fn render_text(
     display: &mut DisplayType,
     display_csn: &mut impl OutputPin,
+    x_pos: i32,
     y_pos: i32,
     color: Rgb565,
     args: Arguments<'_>,
 ) {
     let mut format_buf = ArrayString::<[u8; 16]>::new();
     if fmt::write(&mut format_buf, args).is_ok() {
-        if let Ok(_) = display_csn.set_low() {
+        if display_csn.set_low().is_ok() {
             let _ = egtext!(
                 text = &format_buf,
-                top_left = Point::new(10, y_pos),
+                top_left = Point::new(x_pos, y_pos),
                 style = text_style!(
-                    font = Font24x32,
+                    font = Font12x16,
                     text_color = color,
                     background_color = Rgb565::BLACK,
                 )
@@ -247,33 +252,16 @@ fn render_text(
 fn render_vec3_i16(
     display: &mut DisplayType,
     display_csn: &mut impl OutputPin,
+    x_pos: i32,
     start_y: i32,
-    _label: &str,
     buf: &[i16],
 ) {
-    const LINE_HEIGHT: i32 = 36;
+    //TODO dynamically reformat depending on font size
     let mut y_pos = start_y;
-    //TODO dynamically reformat depending on display size
-    render_text(display, display_csn, y_pos, Rgb565::GREEN,format_args!("X: {}", buf[0]));
-    y_pos += LINE_HEIGHT;
-    render_text(display, display_csn, y_pos, Rgb565::GREEN, format_args!("Y: {}", buf[1]));
-    y_pos += LINE_HEIGHT;
-    render_text(display, display_csn, y_pos, Rgb565::GREEN, format_args!("Z: {}", buf[2]));
+    render_text(display, display_csn, x_pos,y_pos, Rgb565::GREEN,format_args!("X: {}", buf[0]));
+    y_pos += FONT_HEIGHT;
+    render_text(display, display_csn, x_pos,y_pos, Rgb565::GREEN, format_args!("Y: {}", buf[1]));
+    y_pos += FONT_HEIGHT;
+    render_text(display, display_csn, x_pos,y_pos, Rgb565::GREEN, format_args!("Z: {}", buf[2]));
 }
 
-// fn render_vec3_f32(
-//     display: &mut DisplayType,
-//     display_csn: &mut impl OutputPin,
-//     start_y: i32,
-//     _label: &str,
-//     buf: &F32x3,
-// ) {
-//     const LINE_HEIGHT: i32 = 36;
-//     let mut y_pos = start_y;
-//     //TODO dynamically reformat depending on display size
-//     render_text(display, display_csn, y_pos, Rgb565::GREEN,format_args!("X: {:.3}", buf.x));
-//     y_pos += LINE_HEIGHT;
-//     render_text(display, display_csn, y_pos, Rgb565::GREEN, format_args!("Y: {:.3}", buf.y));
-//     y_pos += LINE_HEIGHT;
-//     render_text(display, display_csn, y_pos, Rgb565::GREEN, format_args!("Z: {:.3}", buf.z));
-// }
