@@ -17,5 +17,6 @@ st7789 = "0.2.2"
 arrayvec = {version = "0.5.1", default-features = false}
 shared-bus = {version = "0.1.4", features = ["cortexm"] }
 #spi-memory = "0.2.0"
-spi-memory = { git = "https://github.com/jonas-schievink/spi-memory"}
-
+spi-memory = { git = "https://github.com/tstellanova/spi-memory"}
+#spi-memory = { path = "../spi-memory" }
+hrs3300 = { git = "https://github.com/tstellanova/hrs3300-rs" }
