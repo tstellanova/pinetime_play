@@ -8,9 +8,10 @@ extern crate panic_halt; // you can put a breakpoint on `rust_begin_unwind` to c
 extern crate panic_semihosting; // logs messages to the host stderr; requires a debugger
 
 use nrf52832_hal as p_hal;
-use nrf52832_hal::nrf52832_pac as pac;
-use p_hal::prelude::*;
-use p_hal::{gpio::*, spim, twim, Delay, clocks::LfOscConfiguration};
+use p_hal::nrf52832_pac as pac;
+// use p_hal::prelude::*;
+use p_hal::{clocks::ClocksExt, gpio::{GpioExt,Level}};
+use p_hal::{spim, twim, delay::Delay, clocks::LfOscConfiguration};
 
 use arrayvec::ArrayString;
 use core::fmt;
@@ -78,7 +79,9 @@ fn main() -> ! {
     let mut _user_butt_en =
         port0.p0_15.into_push_pull_output(Level::High).degrade();
     // vibration motor output: drive low to activate motor
-    let mut _vibe = port0.p0_16.into_push_pull_output(Level::Low).degrade();
+    let mut vibe = port0.p0_16.into_push_pull_output(Level::Low).degrade();
+    delay_source.delay_ms(100u8);
+    let _ = vibe.set_high();
 
     // internal i2c0 bus devices: BMA421 (accel), HRS3300 (hrs), CST816S (TouchPad)
     // BMA421-INT:  P0.08
@@ -101,6 +104,15 @@ fn main() -> ! {
     hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms800).unwrap();
     let hrs_id = hrs.device_id().unwrap();
     hprintln!("hrs device id: {}", hrs_id).unwrap();
+
+    // find the BLE radio peripheral
+
+    // let radio = dp.RADIO.
+    let radio = dp.RADIO;
+    // TODO configure dma before starting radio
+    radio.tasks_start.write(|w| {
+        unsafe { w.bits(0) }
+    });
 
 
     let spim0_pins = spim::Pins {
