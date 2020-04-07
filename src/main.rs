@@ -23,7 +23,7 @@ use embedded_graphics::{
     egtext, fonts::{Font12x16}, pixelcolor::Rgb565, text_style,
 };
 use embedded_hal::digital::v2::OutputPin;
-use hrs3300::Hrs3300;
+use hrs3300::{Hrs3300, AdcResolution};
 use rt::entry;
 use st7789::{Orientation, ST7789};
 use bma421::{BMA421};
@@ -33,6 +33,9 @@ mod port_types;
 use port_types::*;
 use embedded_hal::blocking::delay::{DelayMs,DelayUs};
 use core::convert::TryInto;
+
+mod sensor_value_tracker;
+use sensor_value_tracker::SensorValueTracker;
 
 const SCREEN_WIDTH: i32 = 240;
 const SCREEN_HEIGHT: i32 = 240;
@@ -60,11 +63,11 @@ fn main() -> ! {
     // PineTime has a 32 MHz HSE (HFXO) and a 32.768 kHz LSE (LFXO)
     // Optimize clock config
     let dp = pac::Peripherals::take().unwrap();
-    let _clockos = dp.CLOCK.constrain()
-        .enable_ext_hfosc()
-        //.set_lfclk_src_external(LfOscConfiguration::ExternalNoBypass)
-        // TODO starting with external LFCLK hangs...
-        .start_lfclk();
+    // let _clockos = dp.CLOCK.constrain()
+    //     .enable_ext_hfosc()
+    //     //.set_lfclk_src_external(LfOscConfiguration::ExternalNoBypass)
+    //     // TODO starting with external LFCLK hangs...
+    //     .start_lfclk();
 
     let port0 = dp.P0.split();
 
@@ -99,9 +102,10 @@ fn main() -> ! {
 
     let mut hrs = Hrs3300::new(i2c_bus0.acquire());
     hrs.init().unwrap();
+    hrs.set_adc_resolution(AdcResolution::Bit18).unwrap();
     hrs.enable_hrs().unwrap();
     hrs.enable_oscillator().unwrap();
-    hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms800).unwrap();
+    //hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms800).unwrap();
     let hrs_id = hrs.device_id().unwrap();
     hprintln!("hrs device id: {}", hrs_id).unwrap();
 
@@ -152,6 +156,14 @@ fn main() -> ! {
 
     configure_display(&mut display, &mut display_csn, &mut delay_source);
     draw_background(&mut display, &mut display_csn);
+    let half_height = SCREEN_HEIGHT / 2;
+    let graph_area = Rectangle::new(
+        Point::new(10, half_height - 50),
+        Point::new(SCREEN_WIDTH - 20, half_height + 50),
+    );
+
+    let mut hr_monitor = SensorValueTracker::new(0.1);
+
 
     // //TODO // Setup SPI flash NOR memory
     // let flash_csn = port0.p0_05.into_push_pull_output(Level::High);
@@ -169,33 +181,62 @@ fn main() -> ! {
     // }
 
 
+    let mut x_idx = 0;
+    let avg_luminance = 1800;
     loop {
-        if let Ok(accel_bytes) = accel.read_accel_bytes() {
-            let vec3: [i16; 3] = [
-                i16::from_le_bytes(accel_bytes[0..2].try_into().unwrap()) / 16,
-                i16::from_le_bytes(accel_bytes[2..4].try_into().unwrap()) / 16,
-                i16::from_le_bytes(accel_bytes[4..6].try_into().unwrap()) / 16,
-            ];
+        x_idx = x_idx % SCREEN_WIDTH;
+        let ambient_light = hrs.read_als().unwrap_or(0);
+        let heart_rate = hrs.read_hrs().unwrap_or(0);
+        if 0 != heart_rate  {
+            //if heart_rate > 13000 { //TODO heuristic absorption value
+                let heart_rate_f32 = heart_rate as f32;
+                let avg_heart = hr_monitor.update(heart_rate_f32);
 
-            render_vec3_i16(
-                &mut display,
-                &mut display_csn,
-                HALF_SCREEN_WIDTH - 40,
-                30,
-                vec3.as_ref(),
-            );
-        }
+                render_graph_bar(&mut display,
+                                 &mut display_csn,
+                                 &graph_area,
+                                 x_idx,
+                                 heart_rate_f32,
+                                 avg_heart,
+                                 Rgb565::GREEN);
+            //}
 
-        if let Ok(heart_rate) = hrs.read_hrs() {
             render_text(
                 &mut display,
                 &mut display_csn,
                 HALF_SCREEN_WIDTH - 40,
-                SCREEN_HEIGHT - (2*FONT_HEIGHT),
+                SCREEN_HEIGHT - (2 * FONT_HEIGHT),
                 Rgb565::RED,
                 format_args!("HR {}", heart_rate),
             );
+            render_text(
+                &mut display,
+                &mut display_csn,
+                HALF_SCREEN_WIDTH - 40,
+                SCREEN_HEIGHT - (1 * FONT_HEIGHT),
+                Rgb565::RED,
+                format_args!("AL {}", ambient_light),
+            );
         }
+
+
+        // if let Ok(accel_bytes) = accel.read_accel_bytes() {
+        //     let vec3: [i16; 3] = [
+        //         i16::from_le_bytes(accel_bytes[0..2].try_into().unwrap()) / 16,
+        //         i16::from_le_bytes(accel_bytes[2..4].try_into().unwrap()) / 16,
+        //         i16::from_le_bytes(accel_bytes[4..6].try_into().unwrap()) / 16,
+        //     ];
+        //
+        //     render_vec3_i16(
+        //         &mut display,
+        //         &mut display_csn,
+        //         HALF_SCREEN_WIDTH - 40,
+        //         30,
+        //         vec3.as_ref(),
+        //     );
+        // }
+
+
         // else {
         //     let rando = [
         //         rng.random_u16() as i16,
@@ -212,6 +253,7 @@ fn main() -> ! {
         // }
 
         delay_source.delay_us(100u32);
+        x_idx += 1;
     }
 }
 
@@ -283,5 +325,36 @@ fn render_vec3_i16(
     render_text(display, display_csn, x_pos,y_pos, Rgb565::GREEN, format_args!("Y: {}", buf[1]));
     y_pos += FONT_HEIGHT;
     render_text(display, display_csn, x_pos,y_pos, Rgb565::GREEN, format_args!("Z: {}", buf[2]));
+}
+
+fn render_graph_bar(
+    display: &mut DisplayType,
+    display_csn: &mut impl OutputPin,
+    area: &Rectangle,
+    x_pos: i32,
+    value: f32, // this value
+    avg: f32, // avg value
+    color: Rgb565,
+) {
+    if display_csn.set_low().is_ok() {
+        // clear rect
+        let _ = Rectangle::new(Point::new(x_pos, area.top_left.y), Point::new(x_pos + 2, area.bottom_right.y))
+            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+            .draw(display);
+        // actual bar
+        //let y_off = (((area.bottom_right.y - area.top_left.y) as f32) * value) as i32;
+        let half_height = (area.bottom_right.y - area.top_left.y)/2;
+        let y_ctr =  area.top_left.y + half_height;
+        let delta = (value - avg) / avg; //normalized delta
+        let y_delta = (delta * (half_height  as f32)) as i32;
+        let y_pos = y_ctr + y_delta;
+        let _ = Rectangle::new(Point::new(x_pos, y_pos), Point::new(x_pos + 2, area.bottom_right.y))
+            .into_styled(PrimitiveStyle::with_fill(color))
+            .draw(display);
+    }
+    let _ = display_csn.set_high();
+
+    // display.draw( Rect::new(Coord::new(xpos, 0), Coord::new(xpos + (2*BAR_WIDTH), SCREEN_HEIGHT)).with_fill(Some(0u8.into())).into_iter());
+
 }
 

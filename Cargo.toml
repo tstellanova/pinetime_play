@@ -11,6 +11,9 @@ cortex-m-semihosting = "0.3.5"
 embedded-graphics = "0.6.0"
 embedded-hal = "0.2.3"
 nrf52832-hal = {version = "0.8.1", default-features = false, features = ["xxAA-package", "rt"]}
+#num = {version = "0.2.1",  default-features = false, features = ["libm"] }
+num-traits = { version = "0.2", default-features = false, features = ["libm"] }
+
 panic-halt = "0.2.0"
 panic-semihosting = "0.5.3"
 #st7789 = "0.2.2"
@@ -22,8 +25,8 @@ shared-bus = {version = "0.1.4", features = ["cortexm"] }
 #spi-memory = "0.2.0"
 spi-memory = { git = "https://github.com/tstellanova/spi-memory"}
 #spi-memory = { path = "../spi-memory" }
-hrs3300 = { git = "https://github.com/tstellanova/hrs3300-rs" }
-#hrs3300 = { path = "../hrs3300-rs" }
+#hrs3300 = { git = "https://github.com/tstellanova/hrs3300-rs" }
+hrs3300 = { path = "../hrs3300-rs" }
 bma421 = { git = "https://github.com/tstellanova/bma421-rs" }
 #bma421 = { path = "../bma421-rs" }
 
