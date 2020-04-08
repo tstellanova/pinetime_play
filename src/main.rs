@@ -27,7 +27,7 @@ use embedded_graphics::{
 use embedded_graphics::{prelude::*, primitives::*, style::*};
 
 use bma421::BMA421;
-use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::digital::v2::{InputPin, OutputPin};
 use hrs3300::{AdcResolution, Hrs3300};
 use rt::entry;
 use st7789::Orientation;
@@ -68,6 +68,18 @@ fn main() -> ! {
     // must drive this pin high to enable pushbutton
     let mut _user_butt_en =
         port0.p0_15.into_push_pull_output(Level::High).degrade();
+
+    // P0.12: when this pin is low, it indicates the battery is charging
+    let charge_indicator = port0.p0_12.into_floating_input();
+
+    //P0.19
+    // P0.19: power presence?
+    let power_indicator = port0.p0_19.into_floating_input();
+
+    // TODO read battery voltage from P0.31 (AIN7
+    // batteryVoltage = adcValue * 2000 / 1241 ; //millivolts
+
+    hprintln!("power: {} charge: {}").unwrap();
     // vibration motor output: drive low to activate motor
     let mut vibe = port0.p0_16.into_push_pull_output(Level::Low).degrade();
     delay_source.delay_ms(100u8);
@@ -123,23 +135,19 @@ fn main() -> ! {
     let spi_bus0 = shared_bus::CortexMBusManager::new(spim0);
 
     // backlight control pin for display: initialize always on
-    let mut _backlight = port0.p0_22.into_push_pull_output(Level::Low);
-    // SPI chip select (CSN) for the display.
-    let display_csn = port0.p0_25.into_push_pull_output(Level::High);
+    //LCD_BACKLIGHT_MID: P0.22
+    let mut backlight_mid = port0.p0_22.into_push_pull_output(Level::Low);
+    //LCD_BACKLIGHT_HIGH: P0.23
+    let mut backlight_hi = port0.p0_23.into_push_pull_output(Level::High);
+    //LCD_BACKLIGHT_LOW: P0.14
+    let mut backlight_lo = port0.p0_14.into_push_pull_output(Level::High);
 
-    // data/clock switch pin for display
-    let display_dc = port0.p0_18.into_push_pull_output(Level::Low);
-    // reset pin for display
-    let display_rst = port0.p0_26.into_push_pull_output(Level::Low);
-
-    // let disp_int = SPIInterface::new(spi_bus0.acquire(), display_dc, display_csn);
-
-    // create display driver
+   // create display driver
     let mut display = st7789::new_display_driver(
         spi_bus0.acquire(),
-        display_csn,
-        display_dc,
-        display_rst,
+        port0.p0_25.into_push_pull_output(Level::High),// SPI chip select (CSX)
+        port0.p0_18.into_push_pull_output(Level::Low), // data/clock switch pin
+        port0.p0_26.into_push_pull_output(Level::Low), // reset pin
         SCREEN_WIDTH as u16,
         SCREEN_HEIGHT as u16,
     );
@@ -148,11 +156,11 @@ fn main() -> ! {
     display.set_orientation(&Orientation::Portrait).unwrap();
 
     draw_background(&mut display);
-    let half_height = SCREEN_HEIGHT / 2;
-    let graph_area = Rectangle::new(
-        Point::new(10, half_height - 50),
-        Point::new(SCREEN_WIDTH - 20, half_height + 50),
-    );
+    // let half_height = SCREEN_HEIGHT / 2;
+    // let graph_area = Rectangle::new(
+    //     Point::new(10, half_height - 50),
+    //     Point::new(SCREEN_WIDTH - 20, half_height + 50),
+    // );
 
     let mut hr_monitor = SensorValueTracker::new(0.1);
 
@@ -221,19 +229,16 @@ fn main() -> ! {
             );
         }
 
-        // else {
-        //     let rando = [
-        //         rng.random_u16() as i16,
-        //         rng.random_u16() as i16,
-        //         rng.random_u16() as i16,
-        //     ];
-        //     render_vec3_i16(
-        //         &mut display,
-        //          10,
-        //         20,
-        //         rando.as_ref(),
-        //     );
-        // }
+        let is_charging = charge_indicator.is_low().unwrap();
+        let is_powered = power_indicator.is_high().unwrap();
+        render_power(&mut display, is_powered, is_charging);
+
+        // vary backlight level with the power level
+        let level: u8 =
+            if is_powered { 0x04 }
+            else if is_charging { 0x02 }
+            else { 0x01};
+        set_backlight_level(level, &mut backlight_lo, &mut backlight_mid, &mut backlight_hi);
 
         delay_source.delay_us(100u32);
         x_idx += 1;
@@ -254,6 +259,24 @@ fn draw_background(display: &mut impl DrawTarget<Rgb565>) {
     )
     .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 4));
     let _ = center_circle.draw(display);
+}
+
+fn render_power(display: &mut impl DrawTarget<Rgb565>, powered: bool, charging: bool) {
+    let power_fill = if powered { Rgb565::RED } else { Rgb565::BLACK};
+    let charge_fill = if charging { Rgb565::BLUE } else { Rgb565::BLACK};
+
+    let power_circle = Circle::new(
+        Point::new(5, SCREEN_HEIGHT - 10),
+        10,
+    ).into_styled(PrimitiveStyle::with_fill(power_fill));
+    let _ = power_circle.draw(display);
+
+    let charge_circle = Circle::new(
+        Point::new(SCREEN_HEIGHT - 5, SCREEN_HEIGHT - 10),
+        10,
+    ).into_styled(PrimitiveStyle::with_fill(charge_fill));
+    let _ = charge_circle.draw(display);
+
 }
 
 /// Render formatted text to the display
@@ -343,4 +366,22 @@ fn render_graph_bar(
     .draw(display);
 
     // display.draw( Rect::new(Coord::new(xpos, 0), Coord::new(xpos + (2*BAR_WIDTH), SCREEN_HEIGHT)).with_fill(Some(0u8.into())).into_iter());
+}
+
+fn set_backlight_level(level: u8, low: &mut impl OutputPin, mid: &mut impl OutputPin, high: &mut impl OutputPin) {
+    // All off
+    let _ = low.set_high();
+    let _ = mid.set_high();
+    let _ = high.set_high();
+
+    if level & 0x01 ==  0x01 {
+        let _ = low.set_low();
+    }
+    if level & 0x02 == 0x02 {
+        let _ = mid.set_low();
+    }
+    if level & 0x04 == 0x04 {
+        let _ = high.set_low();
+    }
+
 }
