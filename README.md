@@ -26,6 +26,7 @@ This is work-in-progress
 - [x] Load driver for BMA421 accelerometer
 - [x] Explicitly set clock configuration (low speed clock still has problems)
 - [x] Semihosting debug support via swd port
+- [ ] Support for Segger RTT (instead of semihosting)
 - [ ] Translate HRS3300 readings into actual BPM
 - [ ] Access CST816S touchpad (requires creating a driver)
 - [ ] Access all onboard sensors (some missing embedded HAL drivers)

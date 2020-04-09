@@ -27,6 +27,10 @@ use embedded_graphics::{
 use embedded_graphics::{prelude::*, primitives::*, style::*};
 
 use bma421::BMA421;
+use cst816s::{
+    TouchEvent, CST816S, GESTURE_LONG_PRESS, GESTURE_SLIDE_DOWN,
+    GESTURE_SLIDE_LEFT, GESTURE_SLIDE_RIGHT, GESTURE_SLIDE_UP,
+};
 use embedded_hal::digital::v2::{InputPin, OutputPin};
 use hrs3300::{AdcResolution, Hrs3300};
 use rt::entry;
@@ -71,15 +75,12 @@ fn main() -> ! {
 
     // P0.12: when this pin is low, it indicates the battery is charging
     let charge_indicator = port0.p0_12.into_floating_input();
-
-    //P0.19
-    // P0.19: power presence?
+    // P0.19: power presence? when this line is low, there's power connected
     let power_indicator = port0.p0_19.into_floating_input();
 
     // TODO read battery voltage from P0.31 (AIN7
     // batteryVoltage = adcValue * 2000 / 1241 ; //millivolts
 
-    hprintln!("power: {} charge: {}").unwrap();
     // vibration motor output: drive low to activate motor
     let mut vibe = port0.p0_16.into_push_pull_output(Level::Low).degrade();
     delay_source.delay_ms(100u8);
@@ -95,9 +96,21 @@ fn main() -> ! {
     let i2c_port = twim::Twim::new(dp.TWIM1, i2c0_pins, twim::Frequency::K400);
     let i2c_bus0 = shared_bus::CortexMBusManager::new(i2c_port);
 
-    let mut accel = BMA421::new(i2c_bus0.acquire(), &mut delay_source).unwrap();
+    delay_source.delay_ms(10u8);
 
-    delay_source.delay_ms(1u8);
+    //setup touchpad
+    let mut touchpad = CST816S::new(
+        i2c_bus0.acquire(),
+        port0.p0_28.into_pullup_input().degrade(), //P0.28/AIN4 (TP_INT)
+        port0.p0_10.into_push_pull_output(Level::High).degrade(),
+    ); //P0.10/NFC2 (TP_RESET)
+    touchpad.setup(&mut delay_source).unwrap();
+
+    let mut accel = loop {
+        if let Ok(accel) = BMA421::new(i2c_bus0.acquire(), &mut delay_source) {
+            break accel;
+        }
+    };
 
     let mut hrs = Hrs3300::new(i2c_bus0.acquire());
     hrs.init().unwrap();
@@ -142,12 +155,12 @@ fn main() -> ! {
     //LCD_BACKLIGHT_LOW: P0.14
     let mut backlight_lo = port0.p0_14.into_push_pull_output(Level::High);
 
-   // create display driver
+    // create display driver
     let mut display = st7789::new_display_driver(
         spi_bus0.acquire(),
-        port0.p0_25.into_push_pull_output(Level::High),// SPI chip select (CSX)
-        port0.p0_18.into_push_pull_output(Level::Low), // data/clock switch pin
-        port0.p0_26.into_push_pull_output(Level::Low), // reset pin
+        port0.p0_25.into_push_pull_output(Level::High), // SPI chip select (CSX)
+        port0.p0_18.into_push_pull_output(Level::Low),  // data/clock switch pin
+        port0.p0_26.into_push_pull_output(Level::Low),  // reset pin
         SCREEN_WIDTH as u16,
         SCREEN_HEIGHT as u16,
     );
@@ -179,10 +192,30 @@ fn main() -> ! {
     //     .unwrap();
     // }
 
-    let mut x_idx = 0;
-    let avg_luminance = 1800;
     loop {
-        x_idx = x_idx % SCREEN_WIDTH;
+        let is_charging = charge_indicator.is_low().unwrap();
+        let is_powered = power_indicator.is_low().unwrap();
+        render_power(&mut display, is_powered, is_charging);
+
+        // vary backlight level with the power level
+        let level: u8 = if is_powered {
+            0x04
+        } else if is_charging {
+            0x02
+        } else {
+            0x01
+        };
+        set_backlight_level(
+            level,
+            &mut backlight_lo,
+            &mut backlight_mid,
+            &mut backlight_hi,
+        );
+
+        if let Some(evt) = touchpad.read_one_touch_event() {
+            if evt.gesture == GESTURE_LONG_PRESS {}
+        }
+
         // let ambient_light = hrs.read_als().unwrap_or(0);
         // let heart_rate = hrs.read_hrs().unwrap_or(0);
         // if 0 != heart_rate  {
@@ -229,19 +262,7 @@ fn main() -> ! {
             );
         }
 
-        let is_charging = charge_indicator.is_low().unwrap();
-        let is_powered = power_indicator.is_high().unwrap();
-        render_power(&mut display, is_powered, is_charging);
-
-        // vary backlight level with the power level
-        let level: u8 =
-            if is_powered { 0x04 }
-            else if is_charging { 0x02 }
-            else { 0x01};
-        set_backlight_level(level, &mut backlight_lo, &mut backlight_mid, &mut backlight_hi);
-
         delay_source.delay_us(100u32);
-        x_idx += 1;
     }
 }
 
@@ -261,22 +282,28 @@ fn draw_background(display: &mut impl DrawTarget<Rgb565>) {
     let _ = center_circle.draw(display);
 }
 
-fn render_power(display: &mut impl DrawTarget<Rgb565>, powered: bool, charging: bool) {
-    let power_fill = if powered { Rgb565::RED } else { Rgb565::BLACK};
-    let charge_fill = if charging { Rgb565::BLUE } else { Rgb565::BLACK};
+fn render_power(
+    display: &mut impl DrawTarget<Rgb565>,
+    powered: bool,
+    charging: bool,
+) {
+    //hprintln!("power: {} charging: {}", powered, charging).unwrap();
 
-    let power_circle = Circle::new(
-        Point::new(5, SCREEN_HEIGHT - 10),
-        10,
-    ).into_styled(PrimitiveStyle::with_fill(power_fill));
+    let power_fill = if powered { Rgb565::RED } else { Rgb565::BLACK };
+    let charge_fill = if charging {
+        Rgb565::BLUE
+    } else {
+        Rgb565::BLACK
+    };
+
+    let power_circle = Circle::new(Point::new(12, SCREEN_HEIGHT - 12), 10)
+        .into_styled(PrimitiveStyle::with_fill(power_fill));
     let _ = power_circle.draw(display);
 
-    let charge_circle = Circle::new(
-        Point::new(SCREEN_HEIGHT - 5, SCREEN_HEIGHT - 10),
-        10,
-    ).into_styled(PrimitiveStyle::with_fill(charge_fill));
+    let charge_circle =
+        Circle::new(Point::new(SCREEN_WIDTH - 12, SCREEN_HEIGHT - 12), 10)
+            .into_styled(PrimitiveStyle::with_fill(charge_fill));
     let _ = charge_circle.draw(display);
-
 }
 
 /// Render formatted text to the display
@@ -368,13 +395,18 @@ fn render_graph_bar(
     // display.draw( Rect::new(Coord::new(xpos, 0), Coord::new(xpos + (2*BAR_WIDTH), SCREEN_HEIGHT)).with_fill(Some(0u8.into())).into_iter());
 }
 
-fn set_backlight_level(level: u8, low: &mut impl OutputPin, mid: &mut impl OutputPin, high: &mut impl OutputPin) {
+fn set_backlight_level(
+    level: u8,
+    low: &mut impl OutputPin,
+    mid: &mut impl OutputPin,
+    high: &mut impl OutputPin,
+) {
     // All off
     let _ = low.set_high();
     let _ = mid.set_high();
     let _ = high.set_high();
 
-    if level & 0x01 ==  0x01 {
+    if level & 0x01 == 0x01 {
         let _ = low.set_low();
     }
     if level & 0x02 == 0x02 {
@@ -383,5 +415,4 @@ fn set_backlight_level(level: u8, low: &mut impl OutputPin, mid: &mut impl Outpu
     if level & 0x04 == 0x04 {
         let _ = high.set_low();
     }
-
 }
