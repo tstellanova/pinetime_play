@@ -9,9 +9,8 @@ extern crate panic_semihosting; // logs messages to the host stderr; requires a 
 
 use nrf52832_hal as p_hal;
 use p_hal::nrf52832_pac as pac;
-// use p_hal::prelude::*;
 use p_hal::{
-    clocks::ClocksExt,
+    clocks::{ClocksExt}, // LfOscConfiguration},
     gpio::{GpioExt, Level},
 };
 use p_hal::{delay::Delay, spim, twim};
@@ -21,6 +20,7 @@ use core::fmt;
 use core::fmt::Arguments;
 use cortex_m_rt as rt;
 use cortex_m_semihosting::hprintln;
+
 use embedded_graphics::{
     egtext, fonts::Font12x16, pixelcolor::Rgb565, text_style,
 };
@@ -39,8 +39,13 @@ use st7789::Orientation;
 use core::convert::TryInto;
 use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 
-mod sensor_value_tracker;
-use sensor_value_tracker::SensorValueTracker;
+// mod sensor_value_tracker;
+// use sensor_value_tracker::SensorValueTracker;
+use cortex_m::asm::wfe;
+// use nrf52832_hal::prelude::TimerExt;
+// use nrf52832_hal::Timer;
+
+use pac::interrupt;
 
 const SCREEN_WIDTH: i32 = 240;
 const SCREEN_HEIGHT: i32 = 240;
@@ -51,12 +56,16 @@ const FONT_HEIGHT: i32 = 20; //for Font12x16
 
 #[entry]
 fn main() -> ! {
-    let cp = pac::CorePeripherals::take().unwrap();
+    let mut cp = pac::CorePeripherals::take().unwrap();
     let mut delay_source = Delay::new(cp.SYST);
 
     // PineTime has a 32 MHz HSE (HFXO) and a 32.768 kHz LSE (LFXO)
-    let dp = pac::Peripherals::take().unwrap();
-    let _clockit = dp.CLOCK.constrain().enable_ext_hfosc();
+    let mut dp = pac::Peripherals::take().unwrap();
+    let _clockit = dp.CLOCK
+        .constrain()
+        //.set_lfclk_src_external(LfOscConfiguration::ExternalAndBypass)
+        .start_lfclk()
+        .enable_ext_hfosc();
     // TODO configure low-speed clock with LfOscConfiguration: currently hangs
     //.set_lfclk_src_external(LfOscConfiguration::ExternalNoBypass).start_lfclk();
 
@@ -74,9 +83,9 @@ fn main() -> ! {
         port0.p0_15.into_push_pull_output(Level::High).degrade();
 
     // P0.12: when this pin is low, it indicates the battery is charging
-    let charge_indicator = port0.p0_12.into_floating_input();
+    let charging_pin = port0.p0_12.into_floating_input();
     // P0.19: power presence? when this line is low, there's power connected
-    let power_indicator = port0.p0_19.into_floating_input();
+    let power_pin = port0.p0_19.into_floating_input();
 
     // TODO read battery voltage from P0.31 (AIN7
     // batteryVoltage = adcValue * 2000 / 1241 ; //millivolts
@@ -103,14 +112,17 @@ fn main() -> ! {
         port0.p0_10.into_push_pull_output(Level::High).degrade(), //P0.10/NFC2 (TP_RESET)
     );
     touchpad.setup(&mut delay_source).unwrap();
+
+    // watch for interrupts on TP_INT pin
+    enable_gpiote_interrupt(&mut cp.NVIC, &mut dp.GPIOTE, 28, pac::gpiote::config::POLARITYW::HITOLO); //p0.28 (TP_INT)
     let mut touch_target_state = false;
 
     // the accel driver is problematic -- sometimes needs a few tries to startup
-    let mut accel = loop {
-        if let Ok(accel) = BMA421::new(i2c_bus0.acquire(), &mut delay_source) {
-            break accel;
-        }
-    };
+    // let mut accel = loop {
+    //     if let Ok(accel) = BMA421::new(i2c_bus0.acquire(), &mut delay_source) {
+    //         break accel;
+    //     }
+    // };
 
     // let mut hrs = Hrs3300::new(i2c_bus0.acquire());
     // hrs.init().unwrap();
@@ -121,6 +133,7 @@ fn main() -> ! {
     // let hrs_id = hrs.device_id().unwrap();
     // hprintln!("hrs device id: {}", hrs_id).unwrap();
     // hrs.disable_oscillator().unwrap();
+    // let mut hr_monitor = SensorValueTracker::new(0.1);
 
     // // find the BLE radio peripheral
     //
@@ -147,13 +160,11 @@ fn main() -> ! {
     );
     let spi_bus0 = shared_bus::CortexMBusManager::new(spim0);
 
-    // backlight control pin for display: initialize always on
-    //LCD_BACKLIGHT_MID: P0.22
-    let mut backlight_mid = port0.p0_22.into_push_pull_output(Level::Low);
-    //LCD_BACKLIGHT_HIGH: P0.23
-    let mut backlight_hi = port0.p0_23.into_push_pull_output(Level::High);
-    //LCD_BACKLIGHT_LOW: P0.14
-    let mut backlight_lo = port0.p0_14.into_push_pull_output(Level::High);
+    let mut backlight_ctrl = PinetimeBacklightControl::new(
+        port0.p0_14.into_push_pull_output(Level::High).degrade(), //LCD_BACKLIGHT_LOW
+        port0.p0_22.into_push_pull_output(Level::High).degrade(), //LCD_BACKLIGHT_MID
+        port0.p0_23.into_push_pull_output(Level::High).degrade()//LCD_BACKLIGHT_HIGH
+    );
 
     // create display driver
     let mut display = st7789::new_display_driver(
@@ -175,7 +186,6 @@ fn main() -> ! {
     //     Point::new(SCREEN_WIDTH - 20, half_height + 50),
     // );
 
-    let mut hr_monitor = SensorValueTracker::new(0.1);
 
     // //TODO // Setup SPI flash NOR memory
     // let flash_csn = port0.p0_05.into_push_pull_output(Level::High);
@@ -192,27 +202,13 @@ fn main() -> ! {
     //     .unwrap();
     // }
 
-    loop {
-        delay_source.delay_us(10u32);
-        
-        let is_charging = charge_indicator.is_low().unwrap();
-        let is_powered = power_indicator.is_low().unwrap();
-        render_power(&mut display, is_powered, is_charging);
+    let mut idle_count = 0;
 
-        // vary backlight level with the power level
-        let level: u8 = if is_powered {
-            0x04
-        } else if is_charging {
-            0x02
-        } else {
-            0x01
-        };
-        set_backlight_level(
-            level,
-            &mut backlight_lo,
-            &mut backlight_mid,
-            &mut backlight_hi,
-        );
+    loop {
+        let is_charging = charging_pin.is_low().unwrap_or(false);
+        let is_powered = power_pin.is_low().unwrap_or(false);
+        render_power(&mut display, is_powered, is_charging);
+        backlight_ctrl.set_level_by_power_sources(is_powered, is_charging);
 
 
         // let ambient_light = hrs.read_als().unwrap_or(0);
@@ -246,31 +242,41 @@ fn main() -> ! {
         //     );
         // }
 
-        if let Some(evt) = touchpad.read_one_touch_event() {
-            //if evt.gesture == GESTURE_LONG_PRESS {
-            pulse_vibe(&mut vibe, &mut delay_source, 10_000);
-            // TOGGLE
-            touch_target_state = !touch_target_state;
-            render_touch_target(&mut display, touch_target_state);
-            //}
-        }
-        else {
-            if let Ok(accel_bytes) = accel.read_accel_bytes() {
-                let vec3: [i16; 3] = [
-                    i16::from_le_bytes(accel_bytes[0..2].try_into().unwrap()) / 16,
-                    i16::from_le_bytes(accel_bytes[2..4].try_into().unwrap()) / 16,
-                    i16::from_le_bytes(accel_bytes[4..6].try_into().unwrap()) / 16,
-                ];
 
-                render_vec3_i16(
-                    &mut display,
-                    HALF_SCREEN_WIDTH - 40,
-                    30,
-                    vec3.as_ref(),
-                );
+        if let Some(evt) = touchpad.read_one_touch_event() {
+            idle_count = 0;
+            if evt.gesture == GESTURE_LONG_PRESS {
+                pulse_vibe(&mut vibe, &mut delay_source, 10_000);
+                // TOGGLE
+                touch_target_state = !touch_target_state;
+                render_touch_target(&mut display, touch_target_state);
             }
         }
+        else {
+            idle_count += 1;
+            delay_source.delay_us(10u32);
+            // if let Ok(accel_bytes) = accel.read_accel_bytes() {
+            //     let vec3: [i16; 3] = [
+            //         i16::from_le_bytes(accel_bytes[0..2].try_into().unwrap()) / 16,
+            //         i16::from_le_bytes(accel_bytes[2..4].try_into().unwrap()) / 16,
+            //         i16::from_le_bytes(accel_bytes[4..6].try_into().unwrap()) / 16,
+            //     ];
+            //
+            //     render_vec3_i16(
+            //         &mut display,
+            //         HALF_SCREEN_WIDTH - 40,
+            //         30,
+            //         vec3.as_ref(),
+            //     );
+            // }
+        }
 
+        if idle_count > 5 {
+            hprintln!("Sleeping...").unwrap();
+            cortex_m::asm::wfe();
+            hprintln!("AWAKE!").unwrap();
+            idle_count = 0;
+        }
     }
 }
 
@@ -387,59 +393,40 @@ fn render_vec3_i16(
     );
 }
 
-fn render_graph_bar(
-    display: &mut impl DrawTarget<Rgb565>,
-    area: &Rectangle,
-    x_pos: i32,
-    value: f32, // this value
-    avg: f32,   // avg value
-    color: Rgb565,
-) {
-    // clear rect
-    let _ = Rectangle::new(
-        Point::new(x_pos, area.top_left.y),
-        Point::new(x_pos + 2, area.bottom_right.y),
-    )
-    .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-    .draw(display);
-    // actual bar
-    //let y_off = (((area.bottom_right.y - area.top_left.y) as f32) * value) as i32;
-    let half_height = (area.bottom_right.y - area.top_left.y) / 2;
-    let y_ctr = area.top_left.y + half_height;
-    let delta = (value - avg) / avg; //normalized delta
-    let y_delta = (delta * (half_height as f32)) as i32;
-    let y_pos = y_ctr + y_delta;
-    let _ = Rectangle::new(
-        Point::new(x_pos, y_pos),
-        Point::new(x_pos + 2, area.bottom_right.y),
-    )
-    .into_styled(PrimitiveStyle::with_fill(color))
-    .draw(display);
+// fn render_graph_bar(
+//     display: &mut impl DrawTarget<Rgb565>,
+//     area: &Rectangle,
+//     x_pos: i32,
+//     value: f32, // this value
+//     avg: f32,   // avg value
+//     color: Rgb565,
+// )
+// {
+//     // clear rect
+//     let _ = Rectangle::new(
+//         Point::new(x_pos, area.top_left.y),
+//         Point::new(x_pos + 2, area.bottom_right.y),
+//     )
+//     .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+//     .draw(display);
+//     // actual bar
+//     //let y_off = (((area.bottom_right.y - area.top_left.y) as f32) * value) as i32;
+//     let half_height = (area.bottom_right.y - area.top_left.y) / 2;
+//     let y_ctr = area.top_left.y + half_height;
+//     let delta = (value - avg) / avg; //normalized delta
+//     let y_delta = (delta * (half_height as f32)) as i32;
+//     let y_pos = y_ctr + y_delta;
+//     let _ = Rectangle::new(
+//         Point::new(x_pos, y_pos),
+//         Point::new(x_pos + 2, area.bottom_right.y),
+//     )
+//     .into_styled(PrimitiveStyle::with_fill(color))
+//     .draw(display);
+//
+//     // display.draw( Rect::new(Coord::new(xpos, 0), Coord::new(xpos + (2*BAR_WIDTH), SCREEN_HEIGHT)).with_fill(Some(0u8.into())).into_iter());
+// }
+//
 
-    // display.draw( Rect::new(Coord::new(xpos, 0), Coord::new(xpos + (2*BAR_WIDTH), SCREEN_HEIGHT)).with_fill(Some(0u8.into())).into_iter());
-}
-
-fn set_backlight_level(
-    level: u8,
-    low: &mut impl OutputPin,
-    mid: &mut impl OutputPin,
-    high: &mut impl OutputPin,
-) {
-    // All off
-    let _ = low.set_high();
-    let _ = mid.set_high();
-    let _ = high.set_high();
-
-    if level & 0x01 == 0x01 {
-        let _ = low.set_low();
-    }
-    if level & 0x02 == 0x02 {
-        let _ = mid.set_low();
-    }
-    if level & 0x04 == 0x04 {
-        let _ = high.set_low();
-    }
-}
 
 fn pulse_vibe(vibe: &mut impl OutputPin, delay_source: &mut impl DelayUs<u32>, micros: u32) {
     if micros > 0 {
@@ -447,4 +434,93 @@ fn pulse_vibe(vibe: &mut impl OutputPin, delay_source: &mut impl DelayUs<u32>, m
         delay_source.delay_us(micros);
         let _ = vibe.set_high();
     }
+}
+
+
+#[interrupt]
+fn GPIOTE() {
+    hprintln!("GPIOTE").unwrap();
+    // ..
+}
+
+fn enable_gpiote_interrupt(nvic:   &mut pac::NVIC,
+                              gpiote: &mut pac::GPIOTE,
+                              pin_id: u8,
+                              polarity: pac::gpiote::config::POLARITYW,
+)
+{
+    gpiote.config[0].write(|w| {
+        let w = w
+            .mode()
+            .event()
+            .polarity()
+            .variant(polarity);
+
+        unsafe { w.psel().bits(pin_id) }
+    });
+    gpiote.intenset.modify(|_, w| w.in0().set());
+
+    cortex_m::interrupt::free(|_| {
+        pac::NVIC::unpend(pac::Interrupt::GPIOTE);
+        unsafe { pac::NVIC::unmask(pac::Interrupt::GPIOTE); }
+    });
+
+}
+
+pub fn disable_gpiote_interrupt(nvic:   &mut pac::NVIC, gpiote: &mut pac::GPIOTE)
+{
+    gpiote.events_in[0].write(|w| unsafe { w.bits(0) });
+    gpiote.intenclr.modify(|_, w| w.in0().clear());
+    //nrf52::NVIC::mask(Interrupt::GPIOTE);
+}
+
+
+struct PinetimeBacklightControl<T>
+{
+    pub pin_low: T,
+    pub pin_mid: T,
+    pub pin_high: T
+}
+
+impl<T> PinetimeBacklightControl<T>
+    where T: OutputPin
+{
+    fn new(pin_low: T, pin_mid: T, pin_high: T) -> Self {
+        PinetimeBacklightControl {
+            pin_low,
+            pin_mid,
+            pin_high,
+        }
+    }
+
+    pub fn set_level_by_power_sources(&mut self, powered: bool, charging: bool,) {
+        // vary backlight level with the power level
+        let level: u8 = if powered {
+            0x04
+        } else if charging {
+            0x02
+        } else {
+            0x01
+        };
+        self.set_level(level);
+    }
+
+    /// This display supports three bits of brightness
+    pub fn set_level(&mut self, level: u8 ) {
+        // All off
+        let _ = self.pin_low.set_high();
+        let _ = self.pin_mid.set_high();
+        let _ = self.pin_high.set_high();
+
+        if level & 0x01 == 0x01 {
+            let _ = self.pin_low.set_low();
+        }
+        if level & 0x02 == 0x02 {
+            let _ = self.pin_mid.set_low();
+        }
+        if level & 0x04 == 0x04 {
+            let _ = self.pin_high.set_low();
+        }
+    }
+
 }
