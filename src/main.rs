@@ -83,8 +83,7 @@ fn main() -> ! {
 
     // vibration motor output: drive low to activate motor
     let mut vibe = port0.p0_16.into_push_pull_output(Level::Low).degrade();
-    delay_source.delay_ms(100u8);
-    let _ = vibe.set_high();
+    pulse_vibe(&mut vibe, &mut delay_source, 25_000);
 
     // internal i2c0 bus devices: BMA421 (accel), HRS3300 (hrs), CST816S (TouchPad)
     // BMA421-INT:  P0.08
@@ -98,29 +97,30 @@ fn main() -> ! {
 
     delay_source.delay_ms(10u8);
 
-    //setup touchpad
     let mut touchpad = CST816S::new(
         i2c_bus0.acquire(),
         port0.p0_28.into_pullup_input().degrade(), //P0.28/AIN4 (TP_INT)
-        port0.p0_10.into_push_pull_output(Level::High).degrade(),
-    ); //P0.10/NFC2 (TP_RESET)
+        port0.p0_10.into_push_pull_output(Level::High).degrade(), //P0.10/NFC2 (TP_RESET)
+    );
     touchpad.setup(&mut delay_source).unwrap();
+    let mut touch_target_state = false;
 
+    // the accel driver is problematic -- sometimes needs a few tries to startup
     let mut accel = loop {
         if let Ok(accel) = BMA421::new(i2c_bus0.acquire(), &mut delay_source) {
             break accel;
         }
     };
 
-    let mut hrs = Hrs3300::new(i2c_bus0.acquire());
-    hrs.init().unwrap();
-    hrs.set_adc_resolution(AdcResolution::Bit18).unwrap();
-    hrs.enable_hrs().unwrap();
-    hrs.enable_oscillator().unwrap();
-    //hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms800).unwrap();
-    let hrs_id = hrs.device_id().unwrap();
-    hprintln!("hrs device id: {}", hrs_id).unwrap();
-    hrs.disable_oscillator().unwrap();
+    // let mut hrs = Hrs3300::new(i2c_bus0.acquire());
+    // hrs.init().unwrap();
+    // hrs.set_adc_resolution(AdcResolution::Bit18).unwrap();
+    // hrs.enable_hrs().unwrap();
+    // hrs.enable_oscillator().unwrap();
+    // //hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms800).unwrap();
+    // let hrs_id = hrs.device_id().unwrap();
+    // hprintln!("hrs device id: {}", hrs_id).unwrap();
+    // hrs.disable_oscillator().unwrap();
 
     // // find the BLE radio peripheral
     //
@@ -193,6 +193,8 @@ fn main() -> ! {
     // }
 
     loop {
+        delay_source.delay_us(10u32);
+        
         let is_charging = charge_indicator.is_low().unwrap();
         let is_powered = power_indicator.is_low().unwrap();
         render_power(&mut display, is_powered, is_charging);
@@ -212,9 +214,6 @@ fn main() -> ! {
             &mut backlight_hi,
         );
 
-        if let Some(evt) = touchpad.read_one_touch_event() {
-            if evt.gesture == GESTURE_LONG_PRESS {}
-        }
 
         // let ambient_light = hrs.read_als().unwrap_or(0);
         // let heart_rate = hrs.read_hrs().unwrap_or(0);
@@ -247,22 +246,31 @@ fn main() -> ! {
         //     );
         // }
 
-        if let Ok(accel_bytes) = accel.read_accel_bytes() {
-            let vec3: [i16; 3] = [
-                i16::from_le_bytes(accel_bytes[0..2].try_into().unwrap()) / 16,
-                i16::from_le_bytes(accel_bytes[2..4].try_into().unwrap()) / 16,
-                i16::from_le_bytes(accel_bytes[4..6].try_into().unwrap()) / 16,
-            ];
+        if let Some(evt) = touchpad.read_one_touch_event() {
+            //if evt.gesture == GESTURE_LONG_PRESS {
+            pulse_vibe(&mut vibe, &mut delay_source, 10_000);
+            // TOGGLE
+            touch_target_state = !touch_target_state;
+            render_touch_target(&mut display, touch_target_state);
+            //}
+        }
+        else {
+            if let Ok(accel_bytes) = accel.read_accel_bytes() {
+                let vec3: [i16; 3] = [
+                    i16::from_le_bytes(accel_bytes[0..2].try_into().unwrap()) / 16,
+                    i16::from_le_bytes(accel_bytes[2..4].try_into().unwrap()) / 16,
+                    i16::from_le_bytes(accel_bytes[4..6].try_into().unwrap()) / 16,
+                ];
 
-            render_vec3_i16(
-                &mut display,
-                HALF_SCREEN_WIDTH - 40,
-                30,
-                vec3.as_ref(),
-            );
+                render_vec3_i16(
+                    &mut display,
+                    HALF_SCREEN_WIDTH - 40,
+                    30,
+                    vec3.as_ref(),
+                );
+            }
         }
 
-        delay_source.delay_us(100u32);
     }
 }
 
@@ -280,6 +288,22 @@ fn draw_background(display: &mut impl DrawTarget<Rgb565>) {
     )
     .into_styled(PrimitiveStyle::with_stroke(Rgb565::YELLOW, 4));
     let _ = center_circle.draw(display);
+}
+
+
+fn render_touch_target(
+    display: &mut impl DrawTarget<Rgb565>,
+    state: bool)
+{
+    let fill = if state {
+        Rgb565::MAGENTA
+    } else {
+        Rgb565::CYAN
+    };
+
+    let touch_circle = Circle::new(Point::new(HALF_SCREEN_WIDTH, SCREEN_HEIGHT/2), 20)
+        .into_styled(PrimitiveStyle::with_fill(fill));
+    let _ = touch_circle.draw(display);
 }
 
 fn render_power(
@@ -414,5 +438,13 @@ fn set_backlight_level(
     }
     if level & 0x04 == 0x04 {
         let _ = high.set_low();
+    }
+}
+
+fn pulse_vibe(vibe: &mut impl OutputPin, delay_source: &mut impl DelayUs<u32>, micros: u32) {
+    if micros > 0 {
+        let _ = vibe.set_low();
+        delay_source.delay_us(micros);
+        let _ = vibe.set_high();
     }
 }
