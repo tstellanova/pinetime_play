@@ -21,8 +21,8 @@ panic-rtt-core = "0.1.0"
 #st7789 = "0.2.2"
 st7789 = { git = "https://github.com/tstellanova/st7789" }
 #st7789 = { path = "../st7789" }
-cst816s = "0.1.3"
-#cst816s = { git = "https://github.com/tstellanova/cst816s" }
+#cst816s = "0.1.3"
+cst816s = { git = "https://github.com/tstellanova/cst816s" }
 #cst816s = { path = "../cst816s" }
 arrayvec = {version = "0.5.1", default-features = false}
 shared-bus = {version = "0.1.4", features = ["cortexm"] }

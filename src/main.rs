@@ -56,7 +56,8 @@ const MIN_SCREEN_DIM: i32 = SCREEN_HEIGHT;
 const SCREEN_RADIUS: u32 = (MIN_SCREEN_DIM / 2) as u32;
 const FONT_HEIGHT: i32 = 20; //for Font12x16
 
-
+const EXTI_CHAN_TOUCH: usize = 0;
+const EXTI_CHAN_ACCEL: usize = 1;
 
 #[entry]
 fn main() -> ! {
@@ -120,23 +121,32 @@ fn main() -> ! {
     );
     touchpad.setup(&mut delay_source).unwrap();
 
-
     // watch for interrupts on TP_INT pin
     enable_gpiote_interrupt(
-        // &mut cp.NVIC,
         &mut dp.GPIOTE,
-        28,
+        EXTI_CHAN_TOUCH,
+        28, // this matches TP_INT
         pac::gpiote::config::POLARITYW::HITOLO,
-    ); //p0.28 (TP_INT)
+    );
     let mut touch_target_state = false;
 
 
-    // the accel driver is problematic -- sometimes needs a few tries to startup
-    // let mut accel = loop {
-    //     if let Ok(accel) = BMA421::new(i2c_bus0.acquire(), &mut delay_source) {
-    //         break accel;
-    //     }
-    // };
+    //TODO we can't configure the accel to generate interrupts until we have a new driver
+
+//     let _accel_int = port0.p0_08.into_pullup_input().degrade(); //BMA421-INT: P0.08
+//     // watch for interrutpts on BMA421-INT pin
+//     enable_gpiote_interrupt(
+//         &mut dp.GPIOTE,
+// EXTI_CHAN_ACCEL,
+//         8, // this matches BMA421-INT (which is INT1 on BMA421
+//         pac::gpiote::config::POLARITYW::HITOLO,
+//     );
+//     //the accel driver is problematic -- sometimes needs a few tries to startup
+//     let mut accel = BMA421::new(i2c_bus0.acquire(), &mut delay_source).unwrap();
+//
+//     accel.setup(&mut delay_source).unwrap();
+
+
 
     // let mut hrs = Hrs3300::new(i2c_bus0.acquire());
     // hrs.init().unwrap();
@@ -194,8 +204,7 @@ fn main() -> ! {
     display.set_orientation(&Orientation::Portrait).unwrap();
 
 
-
-
+    
     draw_background(&mut display);
     // let half_height = SCREEN_HEIGHT / 2;
     // let graph_area = Rectangle::new(
@@ -418,7 +427,7 @@ fn pulse_vibe(
     }
 }
 
-
+/// Global shared storage for GPIOTE interrupt event bits
 static SHARED_GPIOTE: AtomicUsize = AtomicUsize::new(0);
 
 #[interrupt]
@@ -435,10 +444,11 @@ fn GPIOTE() {
 
 fn enable_gpiote_interrupt(
     gpiote: &mut pac::GPIOTE,
+    channel: usize,
     pin_id: u8,
     polarity: pac::gpiote::config::POLARITYW,
 ) {
-    gpiote.config[0].write(|w| {
+    gpiote.config[channel].write(|w| {
         let w = w.mode().event().polarity().variant(polarity);
         unsafe { w.psel().bits(pin_id) }
     });
@@ -452,14 +462,14 @@ fn enable_gpiote_interrupt(
     });
 }
 
-pub fn disable_gpiote_interrupt(
-    _nvic: &mut pac::NVIC,
-    gpiote: &mut pac::GPIOTE,
-) {
-    gpiote.events_in[0].write(|w| unsafe { w.bits(0) });
-    gpiote.intenclr.modify(|_, w| w.in0().clear());
-    //nrf52::NVIC::mask(Interrupt::GPIOTE);
-}
+// pub fn disable_gpiote_interrupt(
+//     channel: usize,
+//     pin_id: u8,
+//     gpiote: &mut pac::GPIOTE,
+// ) {
+//     gpiote.events_in[channel].write(|w| unsafe { w.bits(pin_id) });
+//     gpiote.intenclr.modify(|_, w| w.in0().clear());
+// }
 
 struct PinetimeBacklightControl<T> {
     pub pin_low: T,
