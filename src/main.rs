@@ -2,9 +2,10 @@
 #![no_main]
 
 // configure panic behavior:
-use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
+//use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
 
-// use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
+// prints panic message to rtt / jlink
+use panic_rtt_core::{self, rtt_init_print, rprintln};
 
 use nrf52832_hal as p_hal;
 use p_hal::nrf52832_pac as pac;
@@ -19,8 +20,6 @@ use core::fmt;
 use core::fmt::Arguments;
 use cortex_m_rt as rt;
 
-// use cortex_m_semihosting::hprintln;
-use rtt_target::{rprintln, rtt_init_print};
 
 use embedded_graphics::{
     egtext, fonts::Font12x16, pixelcolor::Rgb565, text_style,
@@ -29,7 +28,7 @@ use embedded_graphics::{prelude::*, primitives::*, style::*};
 
 use bma421::BMA421;
 use cst816s::{
-    TouchEvent, CST816S, GESTURE_LONG_PRESS, GESTURE_SLIDE_DOWN,
+    TouchEvent, CST816S, GESTURE_SINGLE_CLICK, GESTURE_LONG_PRESS, GESTURE_SLIDE_DOWN,
     GESTURE_SLIDE_LEFT, GESTURE_SLIDE_RIGHT, GESTURE_SLIDE_UP,
 };
 use embedded_hal::digital::v2::{InputPin, OutputPin};
@@ -37,7 +36,6 @@ use hrs3300::{AdcResolution, Hrs3300};
 use rt::entry;
 use st7789::Orientation;
 
-use core::convert::TryInto;
 use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 
 // mod sensor_value_tracker;
@@ -48,6 +46,10 @@ use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 
 use pac::interrupt;
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+use cortex_m::asm::bkpt;
+
+
 const SCREEN_WIDTH: i32 = 240;
 const SCREEN_HEIGHT: i32 = 240;
 const HALF_SCREEN_WIDTH: i32 = SCREEN_WIDTH / 2;
@@ -55,11 +57,13 @@ const MIN_SCREEN_DIM: i32 = SCREEN_HEIGHT;
 const SCREEN_RADIUS: u32 = (MIN_SCREEN_DIM / 2) as u32;
 const FONT_HEIGHT: i32 = 20; //for Font12x16
 
+
+
 #[entry]
 fn main() -> ! {
     rtt_init_print!(NoBlockTrim);
 
-    let mut cp = pac::CorePeripherals::take().unwrap();
+    let cp = pac::CorePeripherals::take().unwrap();
     let mut delay_source = Delay::new(cp.SYST);
 
     // PineTime has a 32 MHz HSE (HFXO) and a 32.768 kHz LSE (LFXO)
@@ -117,14 +121,16 @@ fn main() -> ! {
     );
     touchpad.setup(&mut delay_source).unwrap();
 
+
     // watch for interrupts on TP_INT pin
     enable_gpiote_interrupt(
-        &mut cp.NVIC,
+        // &mut cp.NVIC,
         &mut dp.GPIOTE,
         28,
         pac::gpiote::config::POLARITYW::HITOLO,
     ); //p0.28 (TP_INT)
     let mut touch_target_state = false;
+
 
     // the accel driver is problematic -- sometimes needs a few tries to startup
     // let mut accel = loop {
@@ -188,6 +194,9 @@ fn main() -> ! {
     display.init(&mut delay_source).unwrap();
     display.set_orientation(&Orientation::Portrait).unwrap();
 
+
+
+
     draw_background(&mut display);
     // let half_height = SCREEN_HEIGHT / 2;
     // let graph_area = Rectangle::new(
@@ -209,79 +218,52 @@ fn main() -> ! {
     //     );
     // }
 
-    let mut idle_count = 0;
 
+
+    let mut idle_count = 0;
     loop {
         let is_charging = charging_pin.is_low().unwrap_or(false);
         let is_powered = power_pin.is_low().unwrap_or(false);
         render_power(&mut display, is_powered, is_charging);
         backlight_ctrl.set_level_by_power_sources(is_powered, is_charging);
 
-        // let ambient_light = hrs.read_als().unwrap_or(0);
-        // let heart_rate = hrs.read_hrs().unwrap_or(0);
-        // if 0 != heart_rate  {
-        //     //if heart_rate > 13000 { //TODO heuristic absorption value
-        //         let heart_rate_f32 = heart_rate as f32;
-        //         let avg_heart = hr_monitor.update(heart_rate_f32);
-        //
-        //         render_graph_bar(&mut display,
-        //                          &graph_area,
-        //                          x_idx,
-        //                          heart_rate_f32,
-        //                          avg_heart,
-        //                          Rgb565::GREEN);
-        //     //}
-        //
-        //     render_text(
-        //         &mut display,
-        //         HALF_SCREEN_WIDTH - 40,
-        //         SCREEN_HEIGHT - (2 * FONT_HEIGHT),
-        //         Rgb565::RED,
-        //         format_args!("HR {}", heart_rate),
-        //     );
-        //     render_text(
-        //         &mut display,
-        //         HALF_SCREEN_WIDTH - 40,
-        //         SCREEN_HEIGHT - (1 * FONT_HEIGHT),
-        //         Rgb565::RED,
-        //         format_args!("AL {}", ambient_light),
-        //     );
-        // }
+        let exti_pins =  SHARED_GPIOTE.load(Ordering::Relaxed);
+        if 0 != exti_pins {
+            SHARED_GPIOTE.store(0, Ordering::Relaxed);
+            rprintln!("GPIOTE: {:?}", exti_pins);
+            //bkpt();
+            if let Some(evt) = touchpad.read_one_touch_event(false) {
+                rprintln!("evt: {:?}", evt);
+                idle_count = 0;
+                match evt.gesture {
+                    GESTURE_SINGLE_CLICK => {
+                        pulse_vibe(&mut vibe, &mut delay_source, 10_000);
+                        touch_target_state = !touch_target_state;
+                    }
+                    GESTURE_LONG_PRESS => {
+                        pulse_vibe(&mut vibe, &mut delay_source, 50_000);
+                        touch_target_state = !touch_target_state;
+                    }
+                    _ => {}
+                }
 
-        if let Some(evt) = touchpad.read_one_touch_event() {
-            idle_count = 0;
-            if evt.gesture == GESTURE_LONG_PRESS {
-                pulse_vibe(&mut vibe, &mut delay_source, 10_000);
                 // TOGGLE
-                touch_target_state = !touch_target_state;
                 render_touch_target(&mut display, touch_target_state);
             }
-        } else {
+        }
+        else {
             idle_count += 1;
-            delay_source.delay_us(10u32);
-            // if let Ok(accel_bytes) = accel.read_accel_bytes() {
-            //     let vec3: [i16; 3] = [
-            //         i16::from_le_bytes(accel_bytes[0..2].try_into().unwrap()) / 16,
-            //         i16::from_le_bytes(accel_bytes[2..4].try_into().unwrap()) / 16,
-            //         i16::from_le_bytes(accel_bytes[4..6].try_into().unwrap()) / 16,
-            //     ];
-            //
-            //     render_vec3_i16(
-            //         &mut display,
-            //         HALF_SCREEN_WIDTH - 40,
-            //         30,
-            //         vec3.as_ref(),
-            //     );
-            // }
+            if idle_count > 5 {
+                rprintln!("Sleeping...");
+                cortex_m::asm::wfi();
+                rprintln!("AWAKE!");
+                idle_count = 0;
+            }
         }
 
-        if idle_count > 5 {
-            rprintln!("Sleeping...");
-            cortex_m::asm::wfe();
-            rprintln!("AWAKE!");
-            idle_count = 0;
-        }
     }
+
+
 }
 
 fn draw_background(display: &mut impl DrawTarget<Rgb565>) {
@@ -436,21 +418,28 @@ fn pulse_vibe(
     }
 }
 
+
+static SHARED_GPIOTE: AtomicUsize = AtomicUsize::new(0);
+
 #[interrupt]
 fn GPIOTE() {
-    rprintln!("GPIOTE");
-    // ..
+    // read and clear the interrupt events
+    cortex_m::interrupt::free(|cs| {
+        unsafe { &(*pac::GPIOTE::ptr()).events_in[0].modify(|r, w| {
+            SHARED_GPIOTE.store(r.bits() as usize, Ordering::Relaxed);
+            *w = pac::gpiote::events_in::W::reset_value();
+            w
+        })};
+    });
 }
 
 fn enable_gpiote_interrupt(
-    nvic: &mut pac::NVIC,
     gpiote: &mut pac::GPIOTE,
     pin_id: u8,
     polarity: pac::gpiote::config::POLARITYW,
 ) {
     gpiote.config[0].write(|w| {
         let w = w.mode().event().polarity().variant(polarity);
-
         unsafe { w.psel().bits(pin_id) }
     });
     gpiote.intenset.modify(|_, w| w.in0().set());
@@ -464,7 +453,7 @@ fn enable_gpiote_interrupt(
 }
 
 pub fn disable_gpiote_interrupt(
-    nvic: &mut pac::NVIC,
+    _nvic: &mut pac::NVIC,
     gpiote: &mut pac::GPIOTE,
 ) {
     gpiote.events_in[0].write(|w| unsafe { w.bits(0) });
