@@ -24,5 +24,5 @@ end
 
 load
 
-break rust_begin_unwind
+#break rust_begin_unwind
 run

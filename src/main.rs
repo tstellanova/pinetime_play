@@ -28,8 +28,7 @@ use embedded_graphics::{prelude::*, primitives::*, style::*};
 
 use bma421::BMA421;
 use cst816s::{
-    TouchEvent, CST816S, GESTURE_SINGLE_CLICK, GESTURE_LONG_PRESS, GESTURE_SLIDE_DOWN,
-    GESTURE_SLIDE_LEFT, GESTURE_SLIDE_RIGHT, GESTURE_SLIDE_UP,
+    TouchEvent, CST816S, TouchGesture,
 };
 use embedded_hal::digital::v2::{InputPin, OutputPin};
 use hrs3300::{AdcResolution, Hrs3300};
@@ -236,11 +235,11 @@ fn main() -> ! {
                 rprintln!("evt: {:?}", evt);
                 idle_count = 0;
                 match evt.gesture {
-                    GESTURE_SINGLE_CLICK => {
+                    TouchGesture::SingleClick => {
                         pulse_vibe(&mut vibe, &mut delay_source, 10_000);
                         touch_target_state = !touch_target_state;
                     }
-                    GESTURE_LONG_PRESS => {
+                    TouchGesture::LongPress => {
                         pulse_vibe(&mut vibe, &mut delay_source, 50_000);
                         touch_target_state = !touch_target_state;
                     }
