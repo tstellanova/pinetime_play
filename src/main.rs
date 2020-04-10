@@ -2,15 +2,14 @@
 #![no_main]
 
 // configure panic behavior:
-#[cfg(not(debug_assertions))]
-extern crate panic_halt; // you can put a breakpoint on `rust_begin_unwind` to catch panics
-#[cfg(debug_assertions)]
-extern crate panic_semihosting; // logs messages to the host stderr; requires a debugger
+use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
+
+// use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
 
 use nrf52832_hal as p_hal;
 use p_hal::nrf52832_pac as pac;
 use p_hal::{
-    clocks::{ClocksExt}, // LfOscConfiguration},
+    clocks::ClocksExt, // LfOscConfiguration},
     gpio::{GpioExt, Level},
 };
 use p_hal::{delay::Delay, spim, twim};
@@ -19,7 +18,9 @@ use arrayvec::ArrayString;
 use core::fmt;
 use core::fmt::Arguments;
 use cortex_m_rt as rt;
-use cortex_m_semihosting::hprintln;
+
+// use cortex_m_semihosting::hprintln;
+use rtt_target::{rprintln, rtt_init_print};
 
 use embedded_graphics::{
     egtext, fonts::Font12x16, pixelcolor::Rgb565, text_style,
@@ -41,7 +42,7 @@ use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 
 // mod sensor_value_tracker;
 // use sensor_value_tracker::SensorValueTracker;
-use cortex_m::asm::wfe;
+// use cortex_m::asm::wfe;
 // use nrf52832_hal::prelude::TimerExt;
 // use nrf52832_hal::Timer;
 
@@ -56,12 +57,15 @@ const FONT_HEIGHT: i32 = 20; //for Font12x16
 
 #[entry]
 fn main() -> ! {
+    rtt_init_print!(NoBlockTrim);
+
     let mut cp = pac::CorePeripherals::take().unwrap();
     let mut delay_source = Delay::new(cp.SYST);
 
     // PineTime has a 32 MHz HSE (HFXO) and a 32.768 kHz LSE (LFXO)
     let mut dp = pac::Peripherals::take().unwrap();
-    let _clockit = dp.CLOCK
+    let _clockit = dp
+        .CLOCK
         .constrain()
         //.set_lfclk_src_external(LfOscConfiguration::ExternalAndBypass)
         .start_lfclk()
@@ -71,7 +75,7 @@ fn main() -> ! {
 
     let port0 = dp.P0.split();
 
-    hprintln!("\r\n--- BEGIN ---").unwrap();
+    rprintln!("\r\n--- BEGIN ---");
 
     // random number generator peripheral
     //let mut rng = dp.RNG.constrain();
@@ -114,7 +118,12 @@ fn main() -> ! {
     touchpad.setup(&mut delay_source).unwrap();
 
     // watch for interrupts on TP_INT pin
-    enable_gpiote_interrupt(&mut cp.NVIC, &mut dp.GPIOTE, 28, pac::gpiote::config::POLARITYW::HITOLO); //p0.28 (TP_INT)
+    enable_gpiote_interrupt(
+        &mut cp.NVIC,
+        &mut dp.GPIOTE,
+        28,
+        pac::gpiote::config::POLARITYW::HITOLO,
+    ); //p0.28 (TP_INT)
     let mut touch_target_state = false;
 
     // the accel driver is problematic -- sometimes needs a few tries to startup
@@ -131,7 +140,7 @@ fn main() -> ! {
     // hrs.enable_oscillator().unwrap();
     // //hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms800).unwrap();
     // let hrs_id = hrs.device_id().unwrap();
-    // hprintln!("hrs device id: {}", hrs_id).unwrap();
+    // rprintln!("hrs device id: {}", hrs_id);
     // hrs.disable_oscillator().unwrap();
     // let mut hr_monitor = SensorValueTracker::new(0.1);
 
@@ -163,7 +172,7 @@ fn main() -> ! {
     let mut backlight_ctrl = PinetimeBacklightControl::new(
         port0.p0_14.into_push_pull_output(Level::High).degrade(), //LCD_BACKLIGHT_LOW
         port0.p0_22.into_push_pull_output(Level::High).degrade(), //LCD_BACKLIGHT_MID
-        port0.p0_23.into_push_pull_output(Level::High).degrade()//LCD_BACKLIGHT_HIGH
+        port0.p0_23.into_push_pull_output(Level::High).degrade(), //LCD_BACKLIGHT_HIGH
     );
 
     // create display driver
@@ -186,20 +195,18 @@ fn main() -> ! {
     //     Point::new(SCREEN_WIDTH - 20, half_height + 50),
     // );
 
-
     // //TODO // Setup SPI flash NOR memory
     // let flash_csn = port0.p0_05.into_push_pull_output(Level::High);
     // let mut flash =
     //     spi_memory::series25::Flash::init(spi_bus0.acquire(), flash_csn)
     //         .unwrap();
     // if let Ok(flash_id) = flash.find_device_identifier() {
-    //     hprintln!(
+    //     rprintln!(
     //         "flash ID: {} 0x{:x} {:?}",
     //         flash_id.continuation_count(),
     //         flash_id.mfr_code(),
     //         flash_id.device_id()
-    //     )
-    //     .unwrap();
+    //     );
     // }
 
     let mut idle_count = 0;
@@ -209,7 +216,6 @@ fn main() -> ! {
         let is_powered = power_pin.is_low().unwrap_or(false);
         render_power(&mut display, is_powered, is_charging);
         backlight_ctrl.set_level_by_power_sources(is_powered, is_charging);
-
 
         // let ambient_light = hrs.read_als().unwrap_or(0);
         // let heart_rate = hrs.read_hrs().unwrap_or(0);
@@ -242,7 +248,6 @@ fn main() -> ! {
         //     );
         // }
 
-
         if let Some(evt) = touchpad.read_one_touch_event() {
             idle_count = 0;
             if evt.gesture == GESTURE_LONG_PRESS {
@@ -251,8 +256,7 @@ fn main() -> ! {
                 touch_target_state = !touch_target_state;
                 render_touch_target(&mut display, touch_target_state);
             }
-        }
-        else {
+        } else {
             idle_count += 1;
             delay_source.delay_us(10u32);
             // if let Ok(accel_bytes) = accel.read_accel_bytes() {
@@ -272,9 +276,9 @@ fn main() -> ! {
         }
 
         if idle_count > 5 {
-            hprintln!("Sleeping...").unwrap();
+            rprintln!("Sleeping...");
             cortex_m::asm::wfe();
-            hprintln!("AWAKE!").unwrap();
+            rprintln!("AWAKE!");
             idle_count = 0;
         }
     }
@@ -296,19 +300,12 @@ fn draw_background(display: &mut impl DrawTarget<Rgb565>) {
     let _ = center_circle.draw(display);
 }
 
+fn render_touch_target(display: &mut impl DrawTarget<Rgb565>, state: bool) {
+    let fill = if state { Rgb565::MAGENTA } else { Rgb565::CYAN };
 
-fn render_touch_target(
-    display: &mut impl DrawTarget<Rgb565>,
-    state: bool)
-{
-    let fill = if state {
-        Rgb565::MAGENTA
-    } else {
-        Rgb565::CYAN
-    };
-
-    let touch_circle = Circle::new(Point::new(HALF_SCREEN_WIDTH, SCREEN_HEIGHT/2), 20)
-        .into_styled(PrimitiveStyle::with_fill(fill));
+    let touch_circle =
+        Circle::new(Point::new(HALF_SCREEN_WIDTH, SCREEN_HEIGHT / 2), 20)
+            .into_styled(PrimitiveStyle::with_fill(fill));
     let _ = touch_circle.draw(display);
 }
 
@@ -317,7 +314,7 @@ fn render_power(
     powered: bool,
     charging: bool,
 ) {
-    //hprintln!("power: {} charging: {}", powered, charging).unwrap();
+    //rprintln!("power: {} charging: {}", powered, charging);
 
     let power_fill = if powered { Rgb565::RED } else { Rgb565::BLACK };
     let charge_fill = if charging {
@@ -427,8 +424,11 @@ fn render_vec3_i16(
 // }
 //
 
-
-fn pulse_vibe(vibe: &mut impl OutputPin, delay_source: &mut impl DelayUs<u32>, micros: u32) {
+fn pulse_vibe(
+    vibe: &mut impl OutputPin,
+    delay_source: &mut impl DelayUs<u32>,
+    micros: u32,
+) {
     if micros > 0 {
         let _ = vibe.set_low();
         delay_source.delay_us(micros);
@@ -436,25 +436,20 @@ fn pulse_vibe(vibe: &mut impl OutputPin, delay_source: &mut impl DelayUs<u32>, m
     }
 }
 
-
 #[interrupt]
 fn GPIOTE() {
-    hprintln!("GPIOTE").unwrap();
+    rprintln!("GPIOTE");
     // ..
 }
 
-fn enable_gpiote_interrupt(nvic:   &mut pac::NVIC,
-                              gpiote: &mut pac::GPIOTE,
-                              pin_id: u8,
-                              polarity: pac::gpiote::config::POLARITYW,
-)
-{
+fn enable_gpiote_interrupt(
+    nvic: &mut pac::NVIC,
+    gpiote: &mut pac::GPIOTE,
+    pin_id: u8,
+    polarity: pac::gpiote::config::POLARITYW,
+) {
     gpiote.config[0].write(|w| {
-        let w = w
-            .mode()
-            .event()
-            .polarity()
-            .variant(polarity);
+        let w = w.mode().event().polarity().variant(polarity);
 
         unsafe { w.psel().bits(pin_id) }
     });
@@ -462,28 +457,30 @@ fn enable_gpiote_interrupt(nvic:   &mut pac::NVIC,
 
     cortex_m::interrupt::free(|_| {
         pac::NVIC::unpend(pac::Interrupt::GPIOTE);
-        unsafe { pac::NVIC::unmask(pac::Interrupt::GPIOTE); }
+        unsafe {
+            pac::NVIC::unmask(pac::Interrupt::GPIOTE);
+        }
     });
-
 }
 
-pub fn disable_gpiote_interrupt(nvic:   &mut pac::NVIC, gpiote: &mut pac::GPIOTE)
-{
+pub fn disable_gpiote_interrupt(
+    nvic: &mut pac::NVIC,
+    gpiote: &mut pac::GPIOTE,
+) {
     gpiote.events_in[0].write(|w| unsafe { w.bits(0) });
     gpiote.intenclr.modify(|_, w| w.in0().clear());
     //nrf52::NVIC::mask(Interrupt::GPIOTE);
 }
 
-
-struct PinetimeBacklightControl<T>
-{
+struct PinetimeBacklightControl<T> {
     pub pin_low: T,
     pub pin_mid: T,
-    pub pin_high: T
+    pub pin_high: T,
 }
 
 impl<T> PinetimeBacklightControl<T>
-    where T: OutputPin
+where
+    T: OutputPin,
 {
     fn new(pin_low: T, pin_mid: T, pin_high: T) -> Self {
         PinetimeBacklightControl {
@@ -493,7 +490,11 @@ impl<T> PinetimeBacklightControl<T>
         }
     }
 
-    pub fn set_level_by_power_sources(&mut self, powered: bool, charging: bool,) {
+    pub fn set_level_by_power_sources(
+        &mut self,
+        powered: bool,
+        charging: bool,
+    ) {
         // vary backlight level with the power level
         let level: u8 = if powered {
             0x04
@@ -506,7 +507,7 @@ impl<T> PinetimeBacklightControl<T>
     }
 
     /// This display supports three bits of brightness
-    pub fn set_level(&mut self, level: u8 ) {
+    pub fn set_level(&mut self, level: u8) {
         // All off
         let _ = self.pin_low.set_high();
         let _ = self.pin_mid.set_high();
@@ -522,5 +523,4 @@ impl<T> PinetimeBacklightControl<T>
             let _ = self.pin_high.set_low();
         }
     }
-
 }
