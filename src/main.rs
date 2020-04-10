@@ -254,6 +254,7 @@ fn main() -> ! {
             idle_count += 1;
             if idle_count > 5 {
                 rprintln!("Sleeping...");
+                backlight_ctrl.set_level(0x00); //off?
                 cortex_m::asm::wfi();
                 rprintln!("AWAKE!");
                 idle_count = 0;
