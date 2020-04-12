@@ -30,12 +30,15 @@ use bma421::BMA421;
 use cst816s::{
     TouchEvent, CST816S, TouchGesture,
 };
+
+
 use embedded_hal::digital::v2::{InputPin, OutputPin};
-use hrs3300::{AdcResolution, Hrs3300};
+use hrs3300_core::{HRS3300};
 use rt::entry;
 use st7789::Orientation;
 
 use embedded_hal::blocking::delay::{DelayMs, DelayUs};
+use p_hal::timer::TimerExt;
 
 // mod sensor_value_tracker;
 // use sensor_value_tracker::SensorValueTracker;
@@ -47,6 +50,8 @@ use pac::interrupt;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 use cortex_m::asm::bkpt;
+use embedded_hal::timer::CountDown;
+use nrf52832_hal::Timer;
 
 
 const SCREEN_WIDTH: i32 = 240;
@@ -147,18 +152,18 @@ fn main() -> ! {
 //     accel.setup(&mut delay_source).unwrap();
 
 
-
-    // let mut hrs = Hrs3300::new(i2c_bus0.acquire());
+    // let mut hrs = HRS3300::default(i2c_bus0.acquire());
     // hrs.init().unwrap();
-    // hrs.set_adc_resolution(AdcResolution::Bit18).unwrap();
-    // hrs.enable_hrs().unwrap();
-    // hrs.enable_oscillator().unwrap();
-    // //hrs.set_conversion_delay(hrs3300::ConversionDelay::Ms800).unwrap();
-    // let hrs_id = hrs.device_id().unwrap();
-    // rprintln!("hrs device id: {}", hrs_id);
-    // hrs.disable_oscillator().unwrap();
-    // let mut hr_monitor = SensorValueTracker::new(0.1);
+    // delay_source.delay_ms(3000u32);
+    // for _tick in 0..500 {
+    //     if let Ok((c0data, c1data)) = hrs.read_raw_sample() {
+    //         rprintln!("{}, {}", c0data, c1data);
+    //     }
+    //     delay_source.delay_ms(50u8); //50 ms between attempts
+    // }
+    // hrs.enable(false).unwrap();
 
+    
     // // find the BLE radio peripheral
     //
     // // let radio = dp.RADIO.
@@ -204,7 +209,7 @@ fn main() -> ! {
     display.set_orientation(&Orientation::Portrait).unwrap();
 
 
-    
+
     draw_background(&mut display);
     // let half_height = SCREEN_HEIGHT / 2;
     // let graph_area = Rectangle::new(
@@ -228,7 +233,13 @@ fn main() -> ! {
 
 
 
-    let mut idle_count = 0;
+    //approximately the number of seconds
+    //TODO use HFCLK_FREQ to calculate
+    let fun_cycles: u32 =   5_000_000;
+
+    //use stm32f30x_hal::{Led, Serial1, Timer6};
+    let mut idle_timer =   dp.TIMER3.constrain();
+    idle_timer.start(fun_cycles);
     loop {
         let is_charging = charging_pin.is_low().unwrap_or(false);
         let is_powered = power_pin.is_low().unwrap_or(false);
@@ -238,11 +249,10 @@ fn main() -> ! {
         let exti_pins =  SHARED_GPIOTE.load(Ordering::Relaxed);
         if 0 != exti_pins {
             SHARED_GPIOTE.store(0, Ordering::Relaxed);
-            rprintln!("GPIOTE: {:?}", exti_pins);
-            //bkpt();
+            rprintln!("GPIOTE: {:x?}", exti_pins);
             if let Some(evt) = touchpad.read_one_touch_event(false) {
                 rprintln!("evt: {:?}", evt);
-                idle_count = 0;
+                idle_timer.start(fun_cycles); //restart
                 match evt.gesture {
                     TouchGesture::SingleClick => {
                         pulse_vibe(&mut vibe, &mut delay_source, 10_000);
@@ -260,13 +270,13 @@ fn main() -> ! {
             }
         }
         else {
-            idle_count += 1;
-            if idle_count > 5 {
+            if let Ok(_) = idle_timer.wait() {
+                //timer expired -- sleep
                 rprintln!("Sleeping...");
-                backlight_ctrl.set_level(0x00); //off?
+                backlight_ctrl.set_level(0x00);
                 cortex_m::asm::wfi();
                 rprintln!("AWAKE!");
-                idle_count = 0;
+                idle_timer.start(fun_cycles); //restart
             }
         }
 
